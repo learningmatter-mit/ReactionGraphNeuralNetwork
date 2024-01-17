@@ -52,7 +52,6 @@ class GlobalScaleShift(torch.nn.Module):
 
 
 class PerSpeciesScaleShift(torch.nn.Module):
-
     def __init__(
         self,
         species,
@@ -69,10 +68,8 @@ class PerSpeciesScaleShift(torch.nn.Module):
         self.register_buffer("elem_lookup", elem_lookup)
         self.key = key
         # Per-element scale and shifts
-        self.scales = torch.nn.Parameter(torch.ones(len(self.species)),
-                                         requires_grad=self.trainable)
-        self.shifts = torch.nn.Parameter(torch.zeros(len(self.species)),
-                                         requires_grad=self.trainable)
+        self.scales = torch.nn.Parameter(torch.ones(len(self.species)), requires_grad=self.trainable)
+        self.shifts = torch.nn.Parameter(torch.zeros(len(self.species)), requires_grad=self.trainable)
         if initial_scales is not None:
             scales = []
             for atomic_num in self.species:
@@ -114,7 +111,6 @@ class ScaleShift(torch.nn.Module):
 
     def __init__(self, means=None, stddevs=None):
         super().__init__()
-        print(means, stddevs)
         means = means if (means is not None) else {}
         stddevs = stddevs if (stddevs is not None) else {}
         self.means = means
