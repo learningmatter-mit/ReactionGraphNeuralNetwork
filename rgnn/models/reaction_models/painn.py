@@ -59,6 +59,8 @@ class PaiNN(BaseReactionModel):
         stddevs=None,
     ):
         super().__init__(species, cutoff)
+        #TODO: Should be more rigorous
+        species.sort()
         self.species = species
         self.hidden_channels = hidden_channels
         self.n_interactions = n_interactions
@@ -111,7 +113,11 @@ class PaiNN(BaseReactionModel):
             b_init="zeros",
         )
         self.reset_parameters()
-        self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
+        if means is not None and stddevs is not None:
+            self.scale_output = True
+            self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
+        else:
+            self.scale_output = False
 
     def reset_parameters(self):
         self.energy_output.reset_parameters()
@@ -130,14 +136,8 @@ class PaiNN(BaseReactionModel):
         energy_p = energy_combined[~mask_tensor_r]
 
         # Compute system energy
-        energy_total_r = scatter(energy_r,
-                                 data[K.batch][mask_tensor_r],
-                                 dim=0,
-                                 reduce="sum")
-        energy_total_p = scatter(energy_p,
-                                 data[K.batch][~mask_tensor_r],
-                                 dim=0,
-                                 reduce="sum")
+        energy_total_r = scatter(energy_r, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
+        energy_total_p = scatter(energy_p, data[K.batch][~mask_tensor_r], dim=0, reduce="sum")
         energy_reaction = torch.sub(energy_total_p, energy_total_r)
 
         # Reaction
@@ -147,24 +147,20 @@ class PaiNN(BaseReactionModel):
         reaction_feat = self.reaction_representation(feature_diff)
 
         # TODO: Check dimension
-        reaction_feat = scatter(reaction_feat,
-                                data[K.batch][mask_tensor_r],
-                                dim=0,
-                                reduce="sum")
+        reaction_feat = scatter(reaction_feat, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
         data[K.reaction_features] = reaction_feat
-        reaction_feat = torch.cat(
-            [energy_reaction.unsqueeze(-1), reaction_feat], dim=-1)
+        reaction_feat = torch.cat([energy_reaction.unsqueeze(-1), reaction_feat], dim=-1)
         reaction_feat = F.normalize(reaction_feat, dim=-1)
 
         barrier_out = self.reaction_output(reaction_feat)
         barrier, freq = torch.chunk(barrier_out, chunks=2, dim=1)
-        barrier = self.scale_shift(K.barrier, barrier).squeeze(-1)
-        freq = self.scale_shift(K.freq, freq).squeeze(-1)
+        if self.scale_output:
+            barrier = self.scale_shift(K.barrier, barrier).squeeze(-1)
+            freq = self.scale_shift(K.freq, freq).squeeze(-1)
 
-        return energy_total_r, energy_total_p, barrier, freq
+        return energy_total_r, energy_total_p, barrier.squeeze(-1), freq.squeeze(-1)
 
     def get_hyperparams(self) -> Dict[str, Any]:
-
         hyperparams = {
             "name": "painn_reaction",
             "species": self.species,
@@ -182,4 +178,3 @@ class PaiNN(BaseReactionModel):
             "stddevs": self.stddevs,
         }
         return hyperparams
-
