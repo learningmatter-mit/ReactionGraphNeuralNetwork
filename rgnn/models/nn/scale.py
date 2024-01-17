@@ -124,10 +124,11 @@ class ScaleShift(torch.nn.Module):
             torch.Tensor: layer output.
         """
 
-        stddev = self.stddevs.get(key, 1.0)
-        stddev = stddev.to(inp.device)
-        mean = self.means.get(key, 0.0)
-        mean = mean.to(inp.device)
+        stddev = self.stddevs.get(key, torch.tensor(1.0, dtype=inp.dtype, device=inp.device))
+        # stddev = stddev.to(inp.device)
+        mean = self.means.get(key, torch.tensor(0.0, dtype=inp.dtype, device=inp.device))
+
+        # mean = mean.to(inp.device)
         out = inp * stddev + mean
 
         return out
