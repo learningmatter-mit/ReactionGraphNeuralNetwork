@@ -88,6 +88,8 @@ class ReactionGraph(AtomsGraph):
             energy_f = torch.as_tensor([energy_f], dtype=_default_dtype, device=device)
         if delta_e is not None:
             delta_e = torch.as_tensor([delta_e], dtype=_default_dtype, device=device)
+        elif energy_i is None or energy_f is None:
+            delta_e = None
         else:
             delta_e = torch.sub(energy_f, energy_i)
         return cls(
