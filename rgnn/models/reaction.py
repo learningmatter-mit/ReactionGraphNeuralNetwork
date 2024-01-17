@@ -1,19 +1,18 @@
 from abc import ABC
 from typing import Dict
+
 import torch
 from torch.nn import functional as F
-from torch import nn
 
 from rgnn.common import keys as K
 from rgnn.common.typing import DataDict, OutputDict, Tensor
 from rgnn.models.nn.mlp import MLP
-from rgnn.models.nn.scale import canocialize_species
+from rgnn.models.nn.scale import ScaleShift, canocialize_species
+
 from .builder import get_model
 from .reaction_models.base import BaseReactionModel
 from .registry import registry
 
-
-TRAINING_MODE = ["reaction", "Q", "P"]
 
 @registry.register_model("reaction_NN")
 class ReactionGNN(torch.nn.Module, ABC):
@@ -51,6 +50,8 @@ class ReactionGNN(torch.nn.Module, ABC):
             w_init="xavier_uniform",
             b_init="zeros",
         )
+        self.q_2_output.reset_parameters()
+        self.q_2_scaler = ScaleShift()
         self.rl_q_output = MLP(
             n_input=reaction_model.reaction_feat + 2,
             n_output=3,
@@ -59,7 +60,6 @@ class ReactionGNN(torch.nn.Module, ABC):
             w_init="xavier_uniform",
             b_init="zeros",
         )
-        self.q_2_output.reset_parameters()
         self.rl_q_output.reset_parameters()
         self.probs_out = MLP(
             n_input=reaction_model.hidden_channels,
@@ -91,7 +91,11 @@ class ReactionGNN(torch.nn.Module, ABC):
         energy_r, energy_p, barrier, freq = self.reaction_model(data)
         # outputs[K.energy_i] = energy_r
         # outputs[K.energy_f] = energy_p
-        outputs[K.delta_e] = energy_p-energy_r
+        delta_e = energy_p - energy_r
+        if self.reaction_model.scale_output:
+            delta_e = self.reaction_model.scale_shift(K.delta_e, delta_e)
+
+        outputs[K.delta_e] = delta_e
         outputs[K.barrier] = barrier
         outputs[K.freq] = freq
 
@@ -104,22 +108,29 @@ class ReactionGNN(torch.nn.Module, ABC):
         mask_tensor_r = self.create_subgraph_mask(data)
         _ = self.forward(data)
         softmaxed_probabilities = []
-        probability = self.probs_out(
-            data[K.node_features])[mask_tensor_r].squeeze(-1)
-        for graph_id in torch.unique(data['batch']):
-            mask = data['batch'] == graph_id
+        probability = self.probs_out(data[K.node_features])[mask_tensor_r].squeeze(-1)
+        for graph_id in torch.unique(data["batch"]):
+            mask = data["batch"] == graph_id
             graph_probs = probability[mask[mask_tensor_r]]
             softmaxed_probs = F.softmax(graph_probs, dim=-1)
             softmaxed_probabilities.append(softmaxed_probs)
 
         return softmaxed_probabilities
 
-    def get_q(self, data: DataDict, temperature: float | None = None, elem_chempot:  Dict[str, float] | None = None, alpha=0.0, beta=1.0, dqn=False) -> Tensor:
+    def get_q(
+        self,
+        data: DataDict,
+        temperature: float | None = None,
+        elem_chempot: Dict[str, float] | None = None,
+        alpha=0.0,
+        beta=1.0,
+        dqn=False,
+    ) -> Tensor:
         """Calculate the Q for a given reaction graph
 
         Args:
             data (DataDict): Reaction graph
-            temperature (float): kT 
+            temperature (float): kT
             alpha (float, optional): kinetic part of the q. Defaults to 0.0.
             beta (float, optional): thermodynamic part of the q. Defaults to 1.0.
 
@@ -129,25 +140,21 @@ class ReactionGNN(torch.nn.Module, ABC):
         outputs = self.forward(data)
         reaction_feat = data[K.reaction_features]
         # Calculate q0
-        q_0 = beta*outputs[K.delta_e].unsqueeze(-1)+alpha*outputs[K.barrier].unsqueeze(-1)
+        q_0 = alpha * outputs[K.barrier].unsqueeze(-1) + beta * outputs[K.delta_e].unsqueeze(-1)
         # Calculate q1
         if temperature is not None:
-            q_1 = alpha*outputs[K.freq].unsqueeze(-1)
+            q_1 = alpha * outputs[K.freq].unsqueeze(-1)
         else:
             q_1 = torch.zeros(outputs[K.delta_e].shape[0], device=outputs[K.delta_e].device)
         # Calculate q2
         elem_chempot_tensor = torch.zeros(len(self.reaction_model.species), device=outputs[K.delta_e].device)
-        print(elem_chempot_tensor.shape)
         q_2 = self.q_2_output(reaction_feat)
         if elem_chempot is not None:
             for i, specie in enumerate(self.reaction_model.species):
                 elem_chempot_tensor[i] = torch.tensor(elem_chempot[specie], device="cuda", dtype=torch.float)
-            q_2_mu = q_2*elem_chempot_tensor
-            q_2_mu = torch.sum(q_2_mu, dim=-1, keepdim=True)
-        else:
-            q_2_mu = q_2*elem_chempot_tensor
-            q_2_mu = torch.sum(q_2_mu, dim=-1, keepdim=True)
-            print(q_2.shape)
+
+        q_2_mu = q_2 * elem_chempot_tensor
+        q_2_mu = torch.sum(q_2_mu, dim=-1, keepdim=True)
 
         if dqn:
             reaction_feat = torch.cat([q_0, q_1, q_2_mu, reaction_feat], dim=-1)
@@ -158,10 +165,9 @@ class ReactionGNN(torch.nn.Module, ABC):
             # print(elem_chempot.shape)
             # q_2 = q_2*elem_chempot_tensor
             # print(q_2.shape)
-            q_2 = torch.sum(q_2, dim=-1, keepdim=True)
-            rl_q = q_0+q_1*temperature+q_2_mu
+            rl_q = q_0 + q_1 * temperature + q_2_mu
         else:
-            rl_q = q_0+q_1*temperature+q_2_mu
+            rl_q = q_0 + q_1 * temperature + q_2_mu
         # print(rl_q.shape, q_0.shape, q_1.shape, q_2.shape)
         outputs[K.rl_q] = rl_q.squeeze(-1)  # (N,)
         outputs[K.q0] = q_0.squeeze(-1)  # (N,)
@@ -173,15 +179,12 @@ class ReactionGNN(torch.nn.Module, ABC):
     def get_change_chempot(self, data, mask_tensor_r, elem_chempot):
         converted_elem_chempot = {}
         for key, val in elem_chempot.items():
-
-            converted_elem_chempot.update({
-                canocialize_species([key]).detach().item():
-                    torch.tensor(val, device="cuda", dtype=torch.float)
-            })
-        q_prime = torch.zeros(torch.unique(data['batch']).shape[0],
-                              device="cuda")
-        for j, graph_id in enumerate(torch.unique(data['batch'])):
-            mask = data['batch'] == graph_id
+            converted_elem_chempot.update(
+                {canocialize_species([key]).detach().item(): torch.tensor(val, device="cuda", dtype=torch.float)}
+            )
+        q_prime = torch.zeros(torch.unique(data["batch"]).shape[0], device="cuda")
+        for j, graph_id in enumerate(torch.unique(data["batch"])):
+            mask = data["batch"] == graph_id
             # print(mask.shape, mask_tensor_r.shape, batch["elems"][mask].shape)
             # print(mask[mask_tensor_r])
             reactant_elems = data["elems"][mask][mask_tensor_r[mask]]
@@ -190,18 +193,12 @@ class ReactionGNN(torch.nn.Module, ABC):
             product_elems = data["elems"][mask][~mask_tensor_r[mask]]
             # product_elems = torch.split(product_elems, batch["n_atoms_f"])
             for i, reactant_elem in enumerate(reactant_elems):
-                unique1, counts1 = torch.unique(reactant_elem,
-                                                return_counts=True)
-                unique2, counts2 = torch.unique(product_elems[i],
-                                                return_counts=True)
+                unique1, counts1 = torch.unique(reactant_elem, return_counts=True)
+                unique2, counts2 = torch.unique(product_elems[i], return_counts=True)
 
                 # Convert to Python dictionaries for easy comparison
-                count_dict1 = dict(
-                    zip(unique1.cpu().numpy(),
-                        counts1.cpu().numpy()))
-                count_dict2 = dict(
-                    zip(unique2.cpu().numpy(),
-                        counts2.cpu().numpy()))
+                count_dict1 = dict(zip(unique1.cpu().numpy(), counts1.cpu().numpy()))
+                count_dict2 = dict(zip(unique2.cpu().numpy(), counts2.cpu().numpy()))
                 change_chempot = 0.0
                 # Compare the counts
                 for item in set(count_dict1.keys()).union(count_dict2.keys()):
@@ -215,6 +212,15 @@ class ReactionGNN(torch.nn.Module, ABC):
                 q_prime[j] = change_chempot
         return q_prime
 
+    @torch.jit.unused
+    def save(self, filename: str):
+        state_dict = (self.state_dict(),)
+        hyperparams = (self.reaction_model.hyperparams,)
+        state = {"state_dict": state_dict, "hyper_parameters": hyperparams}
+
+        torch.save(state, filename)
+
+    # "best_metric": best_metric,
     @torch.jit.unused
     @classmethod
     def load(cls, path: str, return_embeddings: bool = False) -> "ReactionGNN":
