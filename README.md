@@ -1,4 +1,5 @@
 # ReactionGraphNeuralNetwork
+
 Graph Neural Network to predict the reaction related properties for reinforcement learning.
 
 ## Installation
@@ -7,5 +8,12 @@ Graph Neural Network to predict the reaction related properties for reinforcemen
 
 ```bash
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-conda install pyg pytorch-cluster pytorch-scatter pytorch-sparse -c pyg 
+conda install pyg pytorch-cluster pytorch-scatter pytorch-sparse -c pyg
+```
+
+- install the package
+
+```bash
+pip install -e .
+pip install -e ".[dev]" # For developer version
 ```
