@@ -132,33 +132,41 @@ class ReactionGNN(torch.nn.Module, ABC):
         q_0 = beta*outputs[K.delta_e].unsqueeze(-1)+alpha*outputs[K.barrier].unsqueeze(-1)
         # Calculate q1
         if temperature is not None:
-            q_1 = alpha*outputs[K.freq].unsqueeze(-1)*temperature
+            q_1 = alpha*outputs[K.freq].unsqueeze(-1)
         else:
             q_1 = torch.zeros(outputs[K.delta_e].shape[0], device=outputs[K.delta_e].device)
         # Calculate q2
+        elem_chempot_tensor = torch.zeros(len(self.reaction_model.species), device=outputs[K.delta_e].device)
+        print(elem_chempot_tensor.shape)
+        q_2 = self.q_2_output(reaction_feat)
         if elem_chempot is not None:
-            q_2 = self.q_2_output(reaction_feat)
-            elem_chempot_tensor = torch.zeros(len(self.reaction_model.species), device=outputs[K.delta_e].device)
             for i, specie in enumerate(self.reaction_model.species):
                 elem_chempot_tensor[i] = torch.tensor(elem_chempot[specie], device="cuda", dtype=torch.float)
-            q_2 = q_2*elem_chempot_tensor
-            q_2 = torch.sum(q_2, dim=-1)
+            q_2_mu = q_2*elem_chempot_tensor
+            q_2_mu = torch.sum(q_2_mu, dim=-1, keepdim=True)
         else:
-            elem_chempot_tensor = torch.zeros(len(self.reaction_model.species), device=outputs[K.delta_e].device)
-            q_2 = torch.zeros(outputs[K.delta_e].shape[0], device=outputs[K.delta_e].device)
+            q_2_mu = q_2*elem_chempot_tensor
+            q_2_mu = torch.sum(q_2_mu, dim=-1, keepdim=True)
+            print(q_2.shape)
 
         if dqn:
-            reaction_feat = torch.cat([q_0, q_1, q_2, reaction_feat], dim=-1)
+            reaction_feat = torch.cat([q_0, q_1, q_2_mu, reaction_feat], dim=-1)
             reaction_feat = F.normalize(reaction_feat, dim=-1)
             q_total = self.rl_q_output(reaction_feat)
-            q_0, q_1, q_2 = torch.chunk(q_total, 3, dim=-1)
-            rl_q = q_0+q_1*temperature+q_2*elem_chempot_tensor
+            q_0, q_1, q_2_mu = torch.chunk(q_total, 3, dim=-1)
+            # print(q_1.shape, q_2.shape)
+            # print(elem_chempot.shape)
+            # q_2 = q_2*elem_chempot_tensor
+            # print(q_2.shape)
+            q_2 = torch.sum(q_2, dim=-1, keepdim=True)
+            rl_q = q_0+q_1*temperature+q_2_mu
         else:
-            rl_q = q_0+q_1+q_2
-        outputs[K.rl_q] = rl_q
-        outputs[K.q0] = q_0
-        outputs[K.q1] = q_1
-        outputs[K.q2] = q_2
+            rl_q = q_0+q_1*temperature+q_2_mu
+        # print(rl_q.shape, q_0.shape, q_1.shape, q_2.shape)
+        outputs[K.rl_q] = rl_q.squeeze(-1)  # (N,)
+        outputs[K.q0] = q_0.squeeze(-1)  # (N,)
+        outputs[K.q1] = q_1.squeeze(-1)  # (N,)
+        outputs[K.q2] = q_2  # (N, M) --> N: batch, M: number of elements
 
         return outputs
 
