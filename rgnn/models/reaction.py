@@ -53,7 +53,7 @@ class ReactionGNN(torch.nn.Module, ABC):
         self.q_2_output.reset_parameters()
         self.q_2_scaler = ScaleShift()
         self.rl_q_output = MLP(
-            n_input=reaction_model.reaction_feat + 2,
+            n_input=reaction_model.reaction_feat + 3,
             n_output=3,
             hidden_layers=(reaction_model.reaction_feat, reaction_model.reaction_feat),
             activation="silu",
@@ -157,7 +157,8 @@ class ReactionGNN(torch.nn.Module, ABC):
         q_2_mu = torch.sum(q_2_mu, dim=-1, keepdim=True)
 
         if dqn:
-            reaction_feat = torch.cat([q_0, q_1, q_2_mu, reaction_feat], dim=-1)
+            q_2_feat = self.q_2_scaler("q_2", q_2_mu)
+            reaction_feat = torch.cat([q_0, q_1, q_2_feat, reaction_feat], dim=-1)
             reaction_feat = F.normalize(reaction_feat, dim=-1)
             q_total = self.rl_q_output(reaction_feat)
             q_0, q_1, q_2_mu = torch.chunk(q_total, 3, dim=-1)
@@ -214,8 +215,8 @@ class ReactionGNN(torch.nn.Module, ABC):
 
     @torch.jit.unused
     def save(self, filename: str):
-        state_dict = (self.state_dict(),)
-        hyperparams = (self.reaction_model.hyperparams,)
+        state_dict = self.state_dict()
+        hyperparams = self.reaction_model.hyperparams
         state = {"state_dict": state_dict, "hyper_parameters": hyperparams}
 
         torch.save(state, filename)
