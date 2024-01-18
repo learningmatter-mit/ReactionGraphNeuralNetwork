@@ -5,7 +5,7 @@ import torch
 from torch.nn import functional as F
 
 from rgnn.common import keys as K
-from rgnn.commom.registry import registry
+from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, OutputDict, Tensor
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.scale import ScaleShift, canocialize_species
@@ -140,7 +140,7 @@ class ReactionGNN(torch.nn.Module, ABC):
         outputs = self.forward(data)
         reaction_feat = data[K.reaction_features]
         # Calculate q0
-        q_0 = alpha * outputs[K.barrier].unsqueeze(-1) + beta * outputs[K.delta_e].unsqueeze(-1)
+        q_0 = -alpha * outputs[K.barrier].unsqueeze(-1) - beta * outputs[K.delta_e].unsqueeze(-1)
         # Calculate q1
         if temperature is not None:
             q_1 = alpha * outputs[K.freq].unsqueeze(-1)
