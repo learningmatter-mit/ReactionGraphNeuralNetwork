@@ -105,7 +105,7 @@ class ReactionGNN(torch.nn.Module, ABC):
         return outputs
 
     def get_p(self, data: DataDict):
-        mask_tensor_r = self.create_subgraph_mask(data)
+        mask_tensor_r = self.reaction_model.create_subgraph_mask(data)
         _ = self.forward(data)
         softmaxed_probabilities = []
         probability = self.probs_out(data[K.node_features])[mask_tensor_r].squeeze(-1)
