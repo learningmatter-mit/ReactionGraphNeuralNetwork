@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import torch
 
-from rgnn.models.registry import registry
+from rgnn.common.registry import registry
 from rgnn.common.typing import Tensor
 
 
@@ -20,6 +20,7 @@ class MLP(torch.nn.Module):
         w_init (str): Weight initializer. Defaults to "xavier_uniform".
         b_init (str): Bias initializer. Defaults to "zeros".
     """
+
     def __init__(
         self,
         n_input: int,
