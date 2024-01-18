@@ -31,7 +31,6 @@ class AverageMeter:
 
 
 class Trainer:
-
     def __init__(
         self,
         model_path,
@@ -64,7 +63,6 @@ class Trainer:
         early_stop=[50, 0.01],
         save_results=True,
     ):
-
         # switch to train mode
         # train model
         train_losses = []
@@ -146,19 +144,13 @@ class Trainer:
                 # TODO Save modelparams too
                 self.save_checkpoint(
                     {
-                        "epoch":
-                            epoch + 1,
-                        "state_dict":
-                            self.model.state_dict(),
-                        "hyper_parameters":
-                            self.model.reaction_model.hyperparams,
+                        "epoch": epoch + 1,
+                        "state_dict": self.model.state_dict(),
+                        "hyper_parameters": self.model.reaction_model.hyperparams,
                         # "best_metric": best_metric,
-                        "best_loss":
-                            best_loss,
-                        "optimizer":
-                            self.optimizer.state_dict(),
-                        "normalizer":
-                            normalizer_dict,
+                        "best_loss": best_loss,
+                        "optimizer": self.optimizer.state_dict(),
+                        "normalizer": normalizer_dict,
                     },
                     is_best,
                     self.model_path,
@@ -166,17 +158,12 @@ class Trainer:
             else:
                 self.save_checkpoint(
                     {
-                        "epoch":
-                            epoch + 1,
-                        "state_dict":
-                            self.model.state_dict(),
-                        "hyper_parameters":
-                            self.model.reaction_model.hyperparams,
+                        "epoch": epoch + 1,
+                        "state_dict": self.model.state_dict(),
+                        "hyper_parameters": self.model.reaction_model.hyperparams,
                         # "best_metric": best_metric,
-                        "best_loss":
-                            best_loss,
-                        "optimizer":
-                            self.optimizer.state_dict(),
+                        "best_loss": best_loss,
+                        "optimizer": self.optimizer.state_dict(),
                     },
                     is_best,
                     self.model_path,
@@ -217,8 +204,7 @@ class Trainer:
                 loss = self.loss_fn(val_batch, output)
                 # metric = self.metric_fn(val_batch, output)
 
-                losses.update(loss.data.cpu().item(),
-                              val_batch["n_atoms"].size(0))
+                losses.update(loss.data.cpu().item(), val_batch["n_atoms"].size(0))
                 # metrics.update(metric.cpu().item(), batch.batch.size(0))
 
                 # measure elapsed time
@@ -235,7 +221,8 @@ class Trainer:
                 batch_time=batch_time,
                 loss=losses,
                 # metrics=metrics,
-            ))
+            )
+        )
 
         return losses.avg
 
@@ -310,11 +297,7 @@ def get_optimizer(
     return optimizer
 
 
-def get_scheduler(sched,
-                  optimizer,
-                  epochs=10,
-                  lr_update_rate=30,
-                  lr_milestones=[100]):
+def get_scheduler(sched, optimizer, epochs=10, lr_update_rate=30, lr_milestones=[100]):
     if sched == "cos_anneal":
         print("Cosine anneal scheduler")
         scheduler = CosineAnnealingLR(optimizer, lr_update_rate)
@@ -334,10 +317,8 @@ def get_scheduler(sched,
         )
     elif sched == "multi_step":
         print("Multi-step scheduler")
-        lr_milestones = np.arange(lr_update_rate, epochs + lr_update_rate,
-                                  lr_update_rate)
+        lr_milestones = np.arange(lr_update_rate, epochs + lr_update_rate, lr_update_rate)
         scheduler = MultiStepLR(optimizer, milestones=lr_milestones, gamma=0.1)
     else:
-        raise NameError(
-            "Choose within cos_anneal, reduce_on_plateau, multi_stp")
+        raise NameError("Choose within cos_anneal, reduce_on_plateau, multi_stp")
     return scheduler

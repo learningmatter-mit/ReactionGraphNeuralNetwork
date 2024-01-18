@@ -5,12 +5,12 @@ from torch.nn import functional as F
 from torch_geometric.utils import scatter
 
 from rgnn.common import keys as K
+from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, Tensor
 from rgnn.graph.utils import compute_neighbor_vecs
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.painn.representation import PaiNNRepresentation
 from rgnn.models.nn.scale import ScaleShift
-from rgnn.models.registry import registry
 
 from .base import BaseReactionModel
 
@@ -59,7 +59,7 @@ class PaiNN(BaseReactionModel):
         stddevs=None,
     ):
         super().__init__(species, cutoff)
-        #TODO: Should be more rigorous
+        # TODO: Should be more rigorous
         species.sort()
         self.species = species
         self.hidden_channels = hidden_channels
@@ -155,8 +155,8 @@ class PaiNN(BaseReactionModel):
         barrier_out = self.reaction_output(reaction_feat)
         barrier, freq = torch.chunk(barrier_out, chunks=2, dim=1)
         if self.scale_output:
-            barrier = self.scale_shift(K.barrier, barrier).squeeze(-1)
-            freq = self.scale_shift(K.freq, freq).squeeze(-1)
+            barrier = self.scale_shift(K.barrier, barrier)
+            freq = self.scale_shift(K.freq, freq)
 
         return energy_total_r, energy_total_p, barrier.squeeze(-1), freq.squeeze(-1)
 

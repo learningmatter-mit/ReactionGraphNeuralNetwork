@@ -1,8 +1,8 @@
 import torch
 from torch.nn import functional as F
 
-from rgnn.models.registry import registry
 from rgnn.common import keys as K
+from rgnn.common.registry import registry
 
 
 @registry.register_loss("mse_loss")

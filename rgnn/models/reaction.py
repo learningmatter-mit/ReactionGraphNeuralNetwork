@@ -5,13 +5,13 @@ import torch
 from torch.nn import functional as F
 
 from rgnn.common import keys as K
+from rgnn.commom.registry import registry
 from rgnn.common.typing import DataDict, OutputDict, Tensor
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.scale import ScaleShift, canocialize_species
 
 from .builder import get_model
 from .reaction_models.base import BaseReactionModel
-from .registry import registry
 
 
 @registry.register_model("reaction_NN")

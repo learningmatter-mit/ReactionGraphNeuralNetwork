@@ -7,9 +7,9 @@ import torch
 import torch.nn
 
 from rgnn.common import keys as K
+from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, Tensor
 from rgnn.models.nn.scale import PerSpeciesScaleShift
-from rgnn.models.registry import registry
 
 
 @registry.register_reaction_model("base")
