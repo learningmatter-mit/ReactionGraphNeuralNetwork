@@ -15,8 +15,8 @@ from rgnn.models.nn.scale import ScaleShift
 from .base import BaseReactionModel
 
 
-@registry.register_reaction_model("painn_reaction")
-class PaiNN(BaseReactionModel):
+@registry.register_reaction_model("painn_reaction_0")
+class PaiNN_0(BaseReactionModel):
     """PaiNN model, as described in https://arxiv.org/abs/2102.03150.
     This model applies equivariant message passing layers within cartesian coordinates.
     Provides "node_features" and "node_vec_features" embeddings.
@@ -105,7 +105,7 @@ class PaiNN(BaseReactionModel):
             b_init="zeros",
         )
         self.reaction_output = MLP(
-            n_input=reaction_feat + 1,
+            n_input=reaction_feat,
             n_output=2,
             hidden_layers=(reaction_feat, reaction_feat),
             activation="silu",
@@ -138,7 +138,6 @@ class PaiNN(BaseReactionModel):
         # Compute system energy
         energy_total_r = scatter(energy_r, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
         energy_total_p = scatter(energy_p, data[K.batch][~mask_tensor_r], dim=0, reduce="sum")
-        energy_reaction = torch.sub(energy_total_p, energy_total_r)
 
         # Reaction
         node_feat_r = data[K.node_features][mask_tensor_r]
@@ -147,8 +146,6 @@ class PaiNN(BaseReactionModel):
         reaction_feat = self.reaction_representation(feature_diff)
 
         reaction_feat = scatter(reaction_feat, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
-        reaction_feat = torch.cat([energy_reaction.unsqueeze(-1), reaction_feat], dim=-1)
-        reaction_feat = F.normalize(reaction_feat, dim=-1)
         data[K.reaction_features] = reaction_feat
 
         barrier_out = self.reaction_output(reaction_feat)
