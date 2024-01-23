@@ -2,6 +2,7 @@ from abc import ABC
 from typing import Dict
 
 import torch
+from torch_geometric.utils import degree
 from torch.nn import functional as F
 
 from rgnn.common import keys as K
@@ -14,8 +15,8 @@ from .builder import get_model
 from .reaction_models.base import BaseReactionModel
 
 
-@registry.register_model("reaction_NN")
-class ReactionGNN(torch.nn.Module, ABC):
+@registry.register_model("reaction_dqn")
+class ReactionDQN(torch.nn.Module, ABC):
     """Interatomic potential model.
     It wraps an energy model and computes the energy, force, stress and hessian.
     The energy model should be a subclass of :class:`BaseEnergyModel`.
@@ -38,37 +39,34 @@ class ReactionGNN(torch.nn.Module, ABC):
         self.reaction_model = reaction_model
         self.return_embeddings = return_embeddings
         self.cutoff = self.reaction_model.get_cutoff()
-        # self.dqn = dqn
-        # if self.dqn:
-        # Initialize q_q params
+
         # TODO: Permutation issue
         self.q_2_output = MLP(
-            n_input=reaction_model.reaction_feat,
+            n_input=reaction_model.reaction_feat + 1,
             n_output=len(self.reaction_model.species),
-            hidden_layers=(reaction_model.reaction_feat, reaction_model.reaction_feat),
-            activation="silu",
+            hidden_layers=(reaction_model.reaction_feat // 2, reaction_model.reaction_feat // 2),
+            activation="relu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
-        self.q_2_output.reset_parameters()
-        self.q_2_scaler = ScaleShift()
         self.rl_q_output = MLP(
-            n_input=reaction_model.reaction_feat + 3,
+            n_input=reaction_model.reaction_feat + 4,
             n_output=3,
-            hidden_layers=(reaction_model.reaction_feat, reaction_model.reaction_feat),
-            activation="silu",
+            hidden_layers=(reaction_model.reaction_feat // 2, reaction_model.reaction_feat // 2),
+            activation="relu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
-        self.rl_q_output.reset_parameters()
         self.probs_out = MLP(
-            n_input=reaction_model.hidden_channels,
+            n_input=reaction_model.hidden_channels + 1,
             n_output=1,
             hidden_layers=(reaction_model.hidden_channels // 2, reaction_model.hidden_channels // 2),
             activation="silu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
+        self.q_2_output.reset_parameters()
+        self.rl_q_output.reset_parameters()
         self.probs_out.reset_parameters()
 
     @torch.jit.unused
@@ -104,19 +102,6 @@ class ReactionGNN(torch.nn.Module, ABC):
                 outputs[key] = data[key]
         return outputs
 
-    def get_p(self, data: DataDict):
-        mask_tensor_r = self.reaction_model.create_subgraph_mask(data)
-        _ = self.forward(data)
-        softmaxed_probabilities = []
-        probability = self.probs_out(data[K.node_features])[mask_tensor_r].squeeze(-1)
-        for graph_id in torch.unique(data["batch"]):
-            mask = data["batch"] == graph_id
-            graph_probs = probability[mask[mask_tensor_r]]
-            softmaxed_probs = F.softmax(graph_probs, dim=-1)
-            softmaxed_probabilities.append(softmaxed_probs)
-
-        return softmaxed_probabilities
-
     def get_q(
         self,
         data: DataDict,
@@ -125,6 +110,8 @@ class ReactionGNN(torch.nn.Module, ABC):
         alpha=0.0,
         beta=1.0,
         dqn=False,
+        mean=0.0,
+        stddev=1.0,
     ) -> Tensor:
         """Calculate the Q for a given reaction graph
 
@@ -145,7 +132,7 @@ class ReactionGNN(torch.nn.Module, ABC):
         if temperature is not None:
             q_1 = alpha * outputs[K.freq].unsqueeze(-1)
         else:
-            q_1 = torch.zeros(outputs[K.delta_e].shape[0], device=outputs[K.delta_e].device)
+            q_1 = torch.zeros(outputs[K.delta_e].shape[0], device=outputs[K.delta_e].device).unsqueeze(-1)
         # Calculate q2
         elem_chempot_tensor = torch.zeros(len(self.reaction_model.species), device=outputs[K.delta_e].device)
         q_2 = self.q_2_output(reaction_feat)
@@ -157,27 +144,52 @@ class ReactionGNN(torch.nn.Module, ABC):
         q_2_mu = torch.sum(q_2_mu, dim=-1, keepdim=True)
 
         if dqn:
-            q_2_feat = self.q_2_scaler("q_2", q_2_mu)
-            reaction_feat = torch.cat([q_0, q_1, q_2_feat, reaction_feat], dim=-1)
-            reaction_feat = F.normalize(reaction_feat, dim=-1)
+            q_concat = torch.cat([q_0, q_1, q_2_mu], dim=-1)
+            q_concat = F.normalize(q_concat, dim=-1)
+            reaction_feat = torch.cat([q_concat, reaction_feat], dim=-1)
             q_total = self.rl_q_output(reaction_feat)
             q_0, q_1, q_2_mu = torch.chunk(q_total, 3, dim=-1)
-            # print(q_1.shape, q_2.shape)
-            # print(elem_chempot.shape)
-            # q_2 = q_2*elem_chempot_tensor
-            # print(q_2.shape)
             rl_q = q_0 + q_1 * temperature + q_2_mu
         else:
             rl_q = q_0 + q_1 * temperature + q_2_mu
-        # print(rl_q.shape, q_0.shape, q_1.shape, q_2.shape)
-        outputs[K.rl_q] = rl_q.squeeze(-1)  # (N,)
+
+        mean = torch.tensor(mean, dtype=rl_q.dtype, device=rl_q.device)
+        stddev = torch.tensor(stddev, dtype=rl_q.dtype, device=rl_q.device)
+        outputs[K.rl_q] = (rl_q * stddev + mean).squeeze(-1)  # (N,)
         outputs[K.q0] = q_0.squeeze(-1)  # (N,)
         outputs[K.q1] = q_1.squeeze(-1)  # (N,)
         outputs[K.q2] = q_2  # (N, M) --> N: batch, M: number of elements
 
         return outputs
 
-    def get_change_chempot(self, data, mask_tensor_r, elem_chempot):
+    def get_p(self, data: DataDict, temperature: float):
+        mask_tensor_r = self.reaction_model.create_subgraph_mask(data)
+
+        node_degrees = degree(data["edge_index"][0], num_nodes=torch.sum(data["n_atoms"]))
+        new_features_list = []
+        for graph_id in torch.unique(data["batch"]):
+            mask = data["batch"] == graph_id
+            filtered_nodes = node_degrees[mask]
+
+            _, sorted_index = torch.sort(filtered_nodes[mask_tensor_r[mask]], dim=-1, stable=True)
+            connectivity_feat = sorted_index / data["n_atoms_i"][graph_id]
+
+            new_features_list.append(connectivity_feat.unsqueeze(-1))
+        connectivity_feat = torch.concat(new_features_list, dim=0)
+        _ = self.forward(data)
+        softmaxed_probabilities = []
+        probs_feat = torch.concat([connectivity_feat, data[K.node_features][mask_tensor_r]], dim=-1)
+        probability = self.probs_out(probs_feat).squeeze(-1)
+        for graph_id in torch.unique(data["batch"]):
+            mask = data["batch"] == graph_id
+            graph_probs = probability[mask[mask_tensor_r]]
+            softmaxed_probs = F.softmax(graph_probs / temperature, dim=-1)
+            softmaxed_probabilities.append(softmaxed_probs)
+
+        return softmaxed_probabilities
+
+    def get_change_chempot(self, data, elem_chempot):
+        mask_tensor_r = self.reaction_model.create_subgraph_mask(data)
         converted_elem_chempot = {}
         for key, val in elem_chempot.items():
             converted_elem_chempot.update(
@@ -186,13 +198,9 @@ class ReactionGNN(torch.nn.Module, ABC):
         q_prime = torch.zeros(torch.unique(data["batch"]).shape[0], device="cuda")
         for j, graph_id in enumerate(torch.unique(data["batch"])):
             mask = data["batch"] == graph_id
-            # print(mask.shape, mask_tensor_r.shape, batch["elems"][mask].shape)
-            # print(mask[mask_tensor_r])
             reactant_elems = data["elems"][mask][mask_tensor_r[mask]]
-            # print(reactant_elems.shape, batch["n_atoms_i"])
-            # reactant_elems = torch.split(reactant_elems, batch["n_atoms_i"])
             product_elems = data["elems"][mask][~mask_tensor_r[mask]]
-            # product_elems = torch.split(product_elems, batch["n_atoms_f"])
+
             for i, reactant_elem in enumerate(reactant_elems):
                 unique1, counts1 = torch.unique(reactant_elem, return_counts=True)
                 unique2, counts2 = torch.unique(product_elems[i], return_counts=True)
@@ -207,11 +215,9 @@ class ReactionGNN(torch.nn.Module, ABC):
                     count2 = count_dict2.get(item, 0)
                     change = count2 - count1
                     chempot = converted_elem_chempot[item] * change
-                    # print(chempot)
                     change_chempot += chempot
-                    # print(f"Item {item}: Count in tensor1 = {count1}, Count in tensor2 = {count2}, Change = {count2 - count1}")
                 q_prime[j] = change_chempot
-        return q_prime
+        return q_prime, converted_elem_chempot
 
     @torch.jit.unused
     def save(self, filename: str):
