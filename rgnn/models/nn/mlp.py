@@ -35,7 +35,6 @@ class MLP(torch.nn.Module):
         w_init: str = "xavier_uniform",
         b_init: str = "zeros",
         dropout_rate: float = DEAFAULT_DROPOUT_RATE,
-        use_batch_norm: bool = False,
     ):
         super().__init__()
         activation_kwargs = activation_kwargs or {}
@@ -47,15 +46,11 @@ class MLP(torch.nn.Module):
         # Create layers
         layers = []
         layers.append(torch.nn.Linear(n_input, hidden_layers[0]))
-        if use_batch_norm:
-            layers.append(torch.nn.BatchNorm1d(hidden_layers[0]))  #
         layers.append(self.activation(**activation_kwargs))
         layers.append(torch.nn.Dropout(dropout_rate))
 
         for i in range(len(hidden_layers) - 1):
             layers.append(torch.nn.Linear(hidden_layers[i], hidden_layers[i + 1]))
-            if use_batch_norm:
-                layers.append(torch.nn.BatchNorm1d(hidden_layers[i + 1]))  # Add batch normalization layer
             layers.append(self.activation(**activation_kwargs))
             layers.append(torch.nn.Dropout(dropout_rate))
 
