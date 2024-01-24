@@ -110,8 +110,8 @@ class ReactionDQN(torch.nn.Module, ABC):
         alpha=0.0,
         beta=1.0,
         dqn=False,
-        mean=0.0,
-        stddev=1.0,
+        # mean=0.0,
+        # stddev=1.0,
     ) -> Tensor:
         """Calculate the Q for a given reaction graph
 
@@ -153,9 +153,9 @@ class ReactionDQN(torch.nn.Module, ABC):
         else:
             rl_q = q_0 + q_1 * temperature + q_2_mu
 
-        mean = torch.tensor(mean, dtype=rl_q.dtype, device=rl_q.device)
-        stddev = torch.tensor(stddev, dtype=rl_q.dtype, device=rl_q.device)
-        outputs[K.rl_q] = (rl_q * stddev + mean).squeeze(-1)  # (N,)
+        # mean = torch.tensor(mean, dtype=rl_q.dtype, device=rl_q.device)
+        # stddev = torch.tensor(stddev, dtype=rl_q.dtype, device=rl_q.device)
+        outputs[K.rl_q] = rl_q.squeeze(-1)  # (N,)
         outputs[K.q0] = q_0.squeeze(-1)  # (N,)
         outputs[K.q1] = q_1.squeeze(-1)  # (N,)
         outputs[K.q2] = q_2  # (N, M) --> N: batch, M: number of elements
