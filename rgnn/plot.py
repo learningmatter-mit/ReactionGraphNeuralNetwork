@@ -41,6 +41,7 @@ PROPERTIES = {
     "bader": "Bader charge",
     "freq": "ln($\\nu_{a}$ /THz)",
     "barrier": "$E_{b}$",
+    "delta_e": "$\\Delta E$",
 }
 
 UNITS = {
@@ -60,6 +61,7 @@ UNITS = {
     "bader": "$q_e$",
     "freq": "",
     "barrier": "eV",
+    "delta_e": "eV",
 }
 
 
@@ -68,14 +70,14 @@ def plot_hexbin(
     preds,
     prop_key: str,
     title="",
-    num_col:int =2,
+    num_col: int = 2,
     scale="linear",
     inc_factor=1.1,
     dec_factor=0.9,
     bins=None,
     plot_helper_lines=False,
     cmap="viridis",
-    style='scifig'
+    style="scifig",
 ):
     new_targ = targs
     new_pred = preds
@@ -143,7 +145,6 @@ def plot_hexbin(
         cb.set_label("Count")
 
         if plot_helper_lines:
-
             if scale == "linear":
                 x = np.linspace(lim_min, lim_max, 50)
                 y_up = x + mae
@@ -167,7 +168,7 @@ def plot_hexbin(
         if UNITS[prop_key] == "":
             ax.set_ylabel("Predicted %s" % (PROPERTIES[prop_key]), fontsize=8)
             ax.set_xlabel("Calculated %s" % (PROPERTIES[prop_key]), fontsize=8)
-            
+
         else:
             ax.set_ylabel("Predicted %s [%s]" % (PROPERTIES[prop_key], UNITS[prop_key]), fontsize=8)
             ax.set_xlabel("Calculated %s [%s]" % (PROPERTIES[prop_key], UNITS[prop_key]), fontsize=8)
@@ -192,7 +193,7 @@ def plot_hexbin(
 
 
 def set_size(num_col, ax=None):
-    """ w, h: width, height in inches """
+    """w, h: width, height in inches"""
     if num_col == 1:
         w = 5.6
         h = 5.6
@@ -205,11 +206,12 @@ def set_size(num_col, ax=None):
     elif num_col == 4:
         w = 1.4
         h = 1.4
-    if not ax: ax=plt.gca()
+    if not ax:
+        ax = plt.gca()
     l = ax.figure.subplotpars.left
     r = ax.figure.subplotpars.right
     t = ax.figure.subplotpars.top
     b = ax.figure.subplotpars.bottom
-    figw = float(w)/(r-l)
-    figh = float(h)/(t-b)
+    figw = float(w) / (r - l)
+    figh = float(h) / (t - b)
     ax.figure.set_size_inches(figw, figh)
