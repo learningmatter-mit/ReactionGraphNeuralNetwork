@@ -1,22 +1,20 @@
+from abc import ABC
 from typing import Any, Dict, Literal, Tuple
 
 import torch
 from torch.nn import functional as F
 from torch_geometric.utils import scatter
-
+from torch_geometric.utils import degree
 from rgnn.common import keys as K
 from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, Tensor
 from rgnn.graph.utils import compute_neighbor_vecs
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.painn.representation import PaiNNRepresentation
-from rgnn.models.nn.scale import ScaleShift
-
-from .base import BaseReactionModel
+from rgnn.models.nn.scale import PerSpeciesScaleShift, canocialize_species
 
 
-@registry.register_reaction_model("painn_reaction")
-class PaiNN(BaseReactionModel):
+class PNet(torch.nn.Module, ABC):
     """PaiNN model, as described in https://arxiv.org/abs/2102.03150.
     This model applies equivariant message passing layers within cartesian coordinates.
     Provides "node_features" and "node_vec_features" embeddings.
@@ -55,10 +53,21 @@ class PaiNN(BaseReactionModel):
         shared_interactions: bool = False,
         shared_filters: bool = False,
         epsilon: float = 1e-8,
-        means=None,
-        stddevs=None,
     ):
-        super().__init__(species, cutoff)
+        super().__init__()
+        atomic_numbers = [val.item() for val in canocialize_species(species)]
+        atomic_numbers_dict = {}
+        for i, key in enumerate(atomic_numbers):
+            atomic_numbers_dict.update({key: species[i]})
+        atomic_numbers.sort()
+        self.atomic_numbers = atomic_numbers
+        sorted_species = []
+        for n in atomic_numbers:
+            sorted_species.append(atomic_numbers_dict[n])
+        self.species = sorted_species
+        self.cutoff = cutoff
+        self.species_energy_scale = PerSpeciesScaleShift(species)
+        self.embedding_keys = self.__class__.embedding_keys
         # TODO: Should be more rigorous
         self.hidden_channels = hidden_channels
         self.n_interactions = n_interactions
@@ -69,8 +78,6 @@ class PaiNN(BaseReactionModel):
         self.shared_interactions = shared_interactions
         self.shared_filters = shared_filters
         self.epsilon = epsilon
-        self.means = means
-        self.stddevs = stddevs
         self.reaction_feat = reaction_feat
         self.hyperparams = self.get_hyperparams()
 
@@ -86,86 +93,47 @@ class PaiNN(BaseReactionModel):
             shared_filters=shared_filters,
             epsilon=epsilon,
         )
-        self.energy_output = MLP(
-            n_input=hidden_channels,
+        self.probs_out = MLP(
+            n_input=hidden_channels + 1,
             n_output=1,
-            hidden_layers=(hidden_channels // 2,),
-            activation="silu",
-            w_init="xavier_uniform",
-            b_init="zeros",
-        )
-        self.reaction_representation = MLP(
-            n_input=hidden_channels,
-            n_output=reaction_feat,
-            hidden_layers=(hidden_channels,),
-            activation="silu",
-            w_init="xavier_uniform",
-            b_init="zeros",
-        )
-        self.reaction_output = MLP(
-            n_input=reaction_feat + 1,
-            n_output=2,
-            hidden_layers=(reaction_feat, reaction_feat),
+            hidden_layers=(hidden_channels // 2, hidden_channels // 2),
             activation="silu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
         self.reset_parameters()
-        if means is not None and stddevs is not None:
-            self.scale_output = True
-            self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
-        else:
-            self.scale_output = False
 
     def reset_parameters(self):
-        self.energy_output.reset_parameters()
         self.representation.reset_parameters()
-        self.reaction_representation.reset_parameters()
-        self.reaction_output.reset_parameters()
+        self.probs_out.reset_parameters()
 
-    def forward(self, data: DataDict) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, data: DataDict, kT: float):
         compute_neighbor_vecs(data)
         data = self.representation(data)
-        mask_tensor_r = self.create_subgraph_mask(data)
-        # Compute per-atom energy
-        energy_combined = self.energy_output(data[K.node_features]).squeeze(-1)
-        energy_combined = self.species_energy_scale(data, energy_combined)
-        energy_r = energy_combined[mask_tensor_r]
-        energy_p = energy_combined[~mask_tensor_r]
 
-        # Compute system energy
-        energy_total_r = scatter(energy_r, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
-        energy_total_p = scatter(energy_p, data[K.batch][~mask_tensor_r], dim=0, reduce="sum")
-        energy_reaction = torch.sub(energy_total_p, energy_total_r)
+        node_degrees = degree(data["edge_index"][0], num_nodes=torch.sum(data["n_atoms"]))
+        new_features_list = []
+        for graph_id in torch.unique(data["batch"]):
+            mask = data["batch"] == graph_id
+            filtered_nodes = node_degrees[mask]
 
-        # Reaction
-        node_feat_r = data[K.node_features][mask_tensor_r]
-        node_feat_f = data[K.node_features][~mask_tensor_r]
-        feature_diff = torch.sub(node_feat_f, node_feat_r)
-        reaction_feat = self.reaction_representation(feature_diff)
+            _, sorted_index = torch.sort(filtered_nodes[mask], dim=-1, stable=True)
+            connectivity_feat = sorted_index / data["n_atoms_i"][graph_id]
 
-        reaction_feat = scatter(reaction_feat, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
-        reaction_feat = torch.cat([energy_reaction.unsqueeze(-1), reaction_feat], dim=-1)
-        reaction_feat = F.normalize(reaction_feat, dim=-1)
-        data[K.reaction_features] = reaction_feat
+            new_features_list.append(connectivity_feat.unsqueeze(-1))
+        connectivity_feat = torch.concat(new_features_list, dim=0)
+        softmaxed_probabilities_list = []
+        probs_feat = torch.concat([connectivity_feat, data[K.node_features]], dim=-1)
+        probability = self.probs_out(probs_feat).squeeze(-1)
+        sorted_batch, _ = torch.sort(torch.unique(data["batch"]))
+        for graph_id in sorted_batch:
+            mask = data["batch"] == graph_id
+            graph_probs = probability[mask]
+            softmaxed_probs = F.softmax(graph_probs / kT, dim=-1)
+            softmaxed_probabilities_list.append(softmaxed_probs.unsqueeze(-1))
+        # softmaxed_probabilities = torch.stack(softmaxed_probabilities_list, dim=0)
 
-        barrier_out = self.reaction_output(reaction_feat)
-        barrier, freq = torch.chunk(barrier_out, chunks=2, dim=1)
-        if self.scale_output:
-            barrier = self.scale_shift(K.barrier, barrier)
-            freq = self.scale_shift(K.freq, freq)
-
-        outputs = {}
-        delta_e = energy_total_p - energy_total_r
-        if self.scale_output:
-            delta_e = self.scale_shift(K.delta_e, delta_e)
-        outputs[K.energy_i] = energy_total_p
-        outputs[K.energy_f] = energy_total_p
-        outputs[K.delta_e] = delta_e
-        outputs[K.barrier] = barrier.squeeze(-1)
-        outputs[K.freq] = freq.squeeze(-1)
-
-        return outputs
+        return softmaxed_probabilities_list
 
     def get_hyperparams(self) -> Dict[str, Any]:
         hyperparams = {
