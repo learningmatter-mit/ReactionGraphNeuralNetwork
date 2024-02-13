@@ -9,7 +9,7 @@ import torch.nn
 from rgnn.common import keys as K
 from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, Tensor
-from rgnn.models.nn.scale import PerSpeciesScaleShift
+from rgnn.models.nn.scale import PerSpeciesScaleShift, canocialize_species
 
 
 @registry.register_reaction_model("base")
@@ -33,7 +33,16 @@ class BaseReactionModel(torch.nn.Module, ABC):
                  *args,
                  **kwargs):
         super().__init__()
-        self.species = species
+        atomic_numbers = [val.item() for val in canocialize_species(species)]
+        atomic_numbers_dict = {}
+        for i, key in enumerate(atomic_numbers):
+            atomic_numbers_dict.update({key: species[i]})
+        atomic_numbers.sort()
+        self.atomic_numbers = atomic_numbers
+        sorted_species = []
+        for n in atomic_numbers:
+            sorted_species.append(atomic_numbers_dict[n])
+        self.species = sorted_species
         self.cutoff = cutoff
         self.species_energy_scale = PerSpeciesScaleShift(species)
         self.embedding_keys = self.__class__.embedding_keys

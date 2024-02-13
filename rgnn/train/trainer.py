@@ -5,6 +5,7 @@ from typing import Dict
 from rgnn.graph.utils import batch_to
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from rgnn.models.reaction import ReactionDQN, ReactionDQN2
 
 MAX_EPOCHS = 100
 BEST_METRIC = 1e10
@@ -62,6 +63,7 @@ class Trainer:
         best_metric=BEST_METRIC,
         early_stop=[50, 0.01],
         save_results=True,
+        best_model_name="best_model.pth.tar",
     ):
         # switch to train mode
         # train model
@@ -136,7 +138,13 @@ class Trainer:
             is_best = val_loss <= best_loss
             best_loss = min(val_loss, best_loss)
 
-            # best_metric = min(val_metric, best_metric)
+            # best_metric = min(val_metric, best_m'etric)
+            if isinstance(self.model, ReactionDQN):
+                hyperparams = self.model.reaction_model.hyperparams
+            elif isinstace(self.mode, ReactionDQN2):
+                hyperparams = self.model.reaction_model.hyperparams
+            else:
+                hyperparams = self.model.hyperparams
             if self.normalizer is not None:
                 normalizer_dict = {}
                 for key, val in self.normalizer.items():
@@ -146,7 +154,7 @@ class Trainer:
                     {
                         "epoch": epoch + 1,
                         "state_dict": self.model.state_dict(),
-                        "hyper_parameters": self.model.reaction_model.hyperparams,
+                        "hyper_parameters": hyperparams,
                         # "best_metric": best_metric,
                         "best_loss": best_loss,
                         "optimizer": self.optimizer.state_dict(),
@@ -154,19 +162,21 @@ class Trainer:
                     },
                     is_best,
                     self.model_path,
+                    best_filename=best_model_name,
                 )
             else:
                 self.save_checkpoint(
                     {
                         "epoch": epoch + 1,
                         "state_dict": self.model.state_dict(),
-                        "hyper_parameters": self.model.reaction_model.hyperparams,
+                        "hyper_parameters": hyperparams,
                         # "best_metric": best_metric,
                         "best_loss": best_loss,
                         "optimizer": self.optimizer.state_dict(),
                     },
                     is_best,
                     self.model_path,
+                    best_filename=best_model_name,
                 )
             # Evaluate when to end training on account of no MAE improvement
             if is_best:
@@ -238,9 +248,10 @@ class Trainer:
         is_best: bool,
         path: str,
         filename: str = "checkpoint.pth.tar",
+        best_filename: str = "best_model.pth.tar",
     ):
         saving_filename = path + "/" + filename
-        best_filename = path + "/" + "best_model.pth.tar"
+        best_filename = path + "/" + best_filename
         torch.save(state, saving_filename)
         if is_best:
             shutil.copyfile(saving_filename, best_filename)
