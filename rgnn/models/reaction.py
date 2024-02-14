@@ -447,7 +447,6 @@ class ReactionDQN2(torch.nn.Module, ABC):
             q_feat = torch.cat([q_feat, q_2_i, reaction_feat], dim=-1)
             emb = self.Q_emb(q_feat)
             # print(kT.shape, elem_chempot_tensor.shape, emb.shape)
-            print(kT.shape, elem_chempot_tensor.shape, emb.shape)
             dqn_feat = torch.cat([kT, elem_chempot_tensor / chempot_threshold, emb], dim=-1)
             outputs[K.dqn_feat] = dqn_feat
             q_out = self.Q_output(dqn_feat)
