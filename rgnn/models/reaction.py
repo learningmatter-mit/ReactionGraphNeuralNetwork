@@ -437,6 +437,8 @@ class ReactionDQN2(torch.nn.Module, ABC):
                 for i, specie in enumerate(self.reaction_model.species[1:]):
                     elem_chempot_tensor[i] = torch.tensor(elem_chempot[specie], device="cuda", dtype=torch.float)
                 elem_chempot_tensor = elem_chempot_tensor.repeat(outputs[K.delta_e].shape[0], 1)
+        else:
+            elem_chempot_tensor = elem_chempot_tensor.repeat(outputs[K.delta_e].shape[0], 1)
         outputs[K.q0] = q_0.squeeze(-1)  # (N,)
         outputs[K.q1] = q_1.squeeze(-1)  # (N,)
         outputs[K.q2_i] = q_2_i  # (N, M) --> N: batch, M: number of elements
@@ -445,6 +447,7 @@ class ReactionDQN2(torch.nn.Module, ABC):
             q_feat = torch.cat([q_feat, q_2_i, reaction_feat], dim=-1)
             emb = self.Q_emb(q_feat)
             # print(kT.shape, elem_chempot_tensor.shape, emb.shape)
+            print(kT.shape, elem_chempot_tensor.shape, emb.shape)
             dqn_feat = torch.cat([kT, elem_chempot_tensor / chempot_threshold, emb], dim=-1)
             outputs[K.dqn_feat] = dqn_feat
             q_out = self.Q_output(dqn_feat)
