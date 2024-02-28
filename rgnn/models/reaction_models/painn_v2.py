@@ -1,20 +1,23 @@
-from abc import ABC
 from typing import Any, Dict, Literal, Tuple
 
 import torch
 from torch.nn import functional as F
 from torch_geometric.utils import scatter
-from torch_geometric.utils import degree
+
 from rgnn.common import keys as K
 from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, Tensor
 from rgnn.graph.utils import compute_neighbor_vecs
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.painn.representation import PaiNNRepresentation
-from rgnn.models.nn.scale import PerSpeciesScaleShift, canocialize_species
+from rgnn.models.nn.scale import ScaleShift
+from rgnn.models.nn.pool import AttentionPool
+
+from .base import BaseReactionModel
 
 
-class PNet(torch.nn.Module, ABC):
+@registry.register_reaction_model("painn_reaction2")
+class PaiNN2(BaseReactionModel):
     """PaiNN model, as described in https://arxiv.org/abs/2102.03150.
     This model applies equivariant message passing layers within cartesian coordinates.
     Provides "node_features" and "node_vec_features" embeddings.
@@ -36,7 +39,7 @@ class PNet(torch.nn.Module, ABC):
         epsilon (float): Small value to add to the denominator for numerical stability. Defaults to 1e-8.
     """
 
-    embedding_keys = [K.node_features]
+    embedding_keys = [K.node_features, K.reaction_features]
     # embedding_keys = [K.node_features, K.node_vec_features, K.reaction_features]
 
     def __init__(
@@ -44,6 +47,7 @@ class PNet(torch.nn.Module, ABC):
         species,
         cutoff: float = 5.0,
         hidden_channels: int = 128,
+        reaction_feat: int = 32,
         n_interactions: int = 3,
         rbf_type: Literal["gaussian", "bessel"] = "bessel",
         n_rbf: int = 20,
@@ -52,25 +56,11 @@ class PNet(torch.nn.Module, ABC):
         shared_interactions: bool = False,
         shared_filters: bool = False,
         epsilon: float = 1e-8,
-        # canonical: bool = False,
-        N_emb: int = 16,
-        N_feat: int = 32,
-        dropout_rate: float = 0.15,
+        means=None,
+        stddevs=None,
+        pool_method="attention",
     ):
-        super().__init__()
-        atomic_numbers = [val.item() for val in canocialize_species(species)]
-        atomic_numbers_dict = {}
-        for i, key in enumerate(atomic_numbers):
-            atomic_numbers_dict.update({key: species[i]})
-        atomic_numbers.sort()
-        self.atomic_numbers = atomic_numbers
-        sorted_species = []
-        for n in atomic_numbers:
-            sorted_species.append(atomic_numbers_dict[n])
-        self.species = sorted_species
-        self.cutoff = cutoff
-        self.species_energy_scale = PerSpeciesScaleShift(species)
-        self.embedding_keys = self.__class__.embedding_keys
+        super().__init__(species, cutoff)
         # TODO: Should be more rigorous
         self.hidden_channels = hidden_channels
         self.n_interactions = n_interactions
@@ -81,10 +71,9 @@ class PNet(torch.nn.Module, ABC):
         self.shared_interactions = shared_interactions
         self.shared_filters = shared_filters
         self.epsilon = epsilon
-        # self.canonical = self.canonical
-        self.dropout_rate = dropout_rate
-        self.n_emb = N_emb
-        self.n_feat = N_feat
+        self.means = means
+        self.stddevs = stddevs
+        self.reaction_feat = reaction_feat
         self.hyperparams = self.get_hyperparams()
 
         self.representation = PaiNNRepresentation(
@@ -99,65 +88,106 @@ class PNet(torch.nn.Module, ABC):
             shared_filters=shared_filters,
             epsilon=epsilon,
         )
-        self.Q_emb = MLP(
-            n_input=hidden_channels + 2,
-            n_output=N_emb,
-            hidden_layers=(N_emb,),
-            activation="leaky_relu",
-            w_init="xavier_uniform",
-            b_init="zeros",
-            dropout_rate=self.dropout_rate,
-        )
-        self.probs_out = MLP(
-            n_input=N_emb,
+        self.energy_output = MLP(
+            n_input=hidden_channels,
             n_output=1,
-            hidden_layers=(N_feat, N_feat),
+            hidden_layers=(hidden_channels // 2,),
             activation="silu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
+        self.reaction_representation = MLP(
+            n_input=hidden_channels,
+            n_output=reaction_feat,
+            hidden_layers=(hidden_channels,),
+            activation="silu",
+            w_init="xavier_uniform",
+            b_init="zeros",
+        )
+        self.reaction_output = MLP(
+            n_input=reaction_feat + 1,
+            n_output=2,
+            hidden_layers=(reaction_feat, reaction_feat),
+            activation="silu",
+            w_init="xavier_uniform",
+            b_init="zeros",
+        )
+        self.pool_method = pool_method
+        if self.pool_method == "attention":
+            self.pool = AttentionPool(
+                feat_dim=reaction_feat,
+                att_act="silu",
+                graph_fp_act="silu",
+                num_out_layers=2,
+                out_dim=reaction_feat,
+                prob_func="softmax",
+            )
         self.reset_parameters()
+        if means is not None and stddevs is not None:
+            self.scale_output = True
+            self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
+        else:
+            self.scale_output = False
 
     def reset_parameters(self):
+        self.energy_output.reset_parameters()
         self.representation.reset_parameters()
-        self.probs_out.reset_parameters()
+        self.reaction_representation.reset_parameters()
+        self.reaction_output.reset_parameters()
 
-    def forward(self, data: DataDict, kT: float):
+    def forward(self, data: DataDict) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         compute_neighbor_vecs(data)
         data = self.representation(data)
+        mask_tensor_r = self.create_subgraph_mask(data)
+        # Compute per-atom energy
+        energy_combined = self.energy_output(data[K.node_features]).squeeze(-1)
+        energy_combined = self.species_energy_scale(data, energy_combined)
+        energy_r = energy_combined[mask_tensor_r]
+        energy_p = energy_combined[~mask_tensor_r]
 
-        node_degrees = degree(data["edge_index"][0], num_nodes=torch.sum(data["n_atoms"]))
-        new_features_list = []
-        for graph_id in torch.unique(data["batch"]):
-            mask = data["batch"] == graph_id
-            filtered_nodes = node_degrees[mask]
+        # Compute system energy
+        energy_total_r = scatter(energy_r, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
+        energy_total_p = scatter(energy_p, data[K.batch][~mask_tensor_r], dim=0, reduce="sum")
+        energy_reaction = torch.sub(energy_total_p, energy_total_r)
 
-            sorted_val, sorted_index = torch.sort(filtered_nodes[mask], dim=-1, stable=True)
-            connectivity_feat = sorted_index / data["n_atoms"][graph_id]
-            new_feat = torch.cat([sorted_val.unsqueeze(-1), connectivity_feat.unsqueeze(-1)], dim=-1)
+        # Reaction
+        node_feat_r = data[K.node_features][mask_tensor_r]
+        node_feat_f = data[K.node_features][~mask_tensor_r]
+        feature_diff = torch.sub(node_feat_f, node_feat_r)
+        reaction_feat = self.reaction_representation(feature_diff)
+        if self.pool_method == "attention":
+            reaction_feat = self.pool(data, reaction_feat)
+        elif self.pool_method == "sum":
+            reaction_feat = scatter(reaction_feat, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
+        reaction_feat = torch.cat([energy_reaction.unsqueeze(-1), reaction_feat], dim=-1)
+        reaction_feat = F.normalize(reaction_feat, dim=-1)
+        data[K.reaction_features] = reaction_feat
 
-            new_features_list.append(new_feat)
-        connectivity_feat = torch.concat(new_features_list, dim=0)
-        softmaxed_probabilities_list = []
-        probs_feat = torch.concat([connectivity_feat, data[K.node_features]], dim=-1)
-        emb = self.emb(probs_feat)
-        probability = self.probs_out(emb).squeeze(-1)
-        sorted_batch, _ = torch.sort(torch.unique(data["batch"]))
-        for graph_id in sorted_batch:
-            mask = data["batch"] == graph_id
-            graph_probs = probability[mask]
-            softmaxed_probs = F.softmax(graph_probs / kT, dim=-1)
-            softmaxed_probabilities_list.append(softmaxed_probs.unsqueeze(-1))
-        # softmaxed_probabilities = torch.stack(softmaxed_probabilities_list, dim=0)
+        barrier_out = self.reaction_output(reaction_feat)
+        barrier, freq = torch.chunk(barrier_out, chunks=2, dim=1)
+        if self.scale_output:
+            barrier = self.scale_shift(K.barrier, barrier)
+            freq = self.scale_shift(K.freq, freq)
 
-        return softmaxed_probabilities_list
+        outputs = {}
+        delta_e = energy_total_p - energy_total_r
+        if self.scale_output:
+            delta_e = self.scale_shift(K.delta_e, delta_e)
+        outputs[K.energy_i] = energy_total_r
+        outputs[K.energy_f] = energy_total_p
+        outputs[K.delta_e] = delta_e
+        outputs[K.barrier] = barrier.squeeze(-1)
+        outputs[K.freq] = freq.squeeze(-1)
+
+        return outputs
 
     def get_hyperparams(self) -> Dict[str, Any]:
         hyperparams = {
-            "name": "p_net",
+            "name": "painn_reaction2",
             "species": self.species,
             "cutoff": self.cutoff,
             "hidden_channels": self.hidden_channels,
+            "reaction_feat": self.reaction_feat,
             "n_interactions": self.n_interactions,
             "rbf_type": self.rbf_type,
             "n_rbf": self.n_rbf,
@@ -165,10 +195,8 @@ class PNet(torch.nn.Module, ABC):
             "activation": self.activation,
             "shared_interactions": self.shared_interactions,
             "shared_filters": self.shared_filters,
-            # "canonical": self.canonical,
-            "dropout_rate": self.dropout_rate,
-            "N_emb": self.n_emb,
-            "N_feat": self.n_feat,
+            "means": self.means,
+            "stddevs": self.stddevs,
         }
         return hyperparams
 

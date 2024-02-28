@@ -8,12 +8,13 @@ import torch.nn
 
 from rgnn.common import keys as K
 from rgnn.common.registry import registry
+from rgnn.common.configuration import Configurable
 from rgnn.common.typing import DataDict, Tensor
 from rgnn.models.nn.scale import PerSpeciesScaleShift, canocialize_species
 
 
 @registry.register_reaction_model("base")
-class BaseReactionModel(torch.nn.Module, ABC):
+class BaseReactionModel(torch.nn.Module, Configurable, ABC):
     """Base class for energy models.
     Takes data or batch and returns energy.
 
@@ -27,11 +28,7 @@ class BaseReactionModel(torch.nn.Module, ABC):
 
     embedding_keys: List[str] = []
 
-    def __init__(self,
-                 species: list[str],
-                 cutoff: float = 5.0,
-                 *args,
-                 **kwargs):
+    def __init__(self, species: list[str], cutoff: float = 5.0, *args, **kwargs):
         super().__init__()
         atomic_numbers = [val.item() for val in canocialize_species(species)]
         atomic_numbers_dict = {}
@@ -82,15 +79,37 @@ class BaseReactionModel(torch.nn.Module, ABC):
         if cls.__name__ == "BaseReactionModel":
             if name is None:
                 raise ValueError(
-                    "Cannot initialize BaseEnergyModel from config. Please specify the name of the model."
+                    "Cannot initialize BaseReactionModel from config. Please specify the name of the model."
                 )
             model_class = registry.get_reaction_model_class(name)
         else:
             if name is not None and hasattr(cls, "name") and cls.name != name:
-                raise ValueError(
-                    "The name in the config is different from the class name.")
+                raise ValueError("The name in the config is different from the class name.")
             model_class = cls
         return super().from_config(config, actual_cls=model_class)
+
+    @torch.jit.unused
+    @classmethod
+    def load(cls, path: str):
+        """Load the model from checkpoint created by pytorch lightning.
+
+        Args:
+            path (str): Path to the checkpoint file.
+
+        Returns:
+            InterAtomicPotential: The loaded model.
+        """
+        map_location = None if torch.cuda.is_available() else "cpu"
+        ckpt = torch.load(path, map_location=map_location)
+        hparams = ckpt["hyper_parameters"]
+        # if hparams.get("name", None) is not None:
+        #     hparams.pop("name")
+        # elif hparams.get("@name", None) is not None:
+        #     hparams.pop("@name")
+        state_dict = ckpt["state_dict"]
+        model = cls.from_config(**hparams)
+        model.load_state_dict(state_dict=state_dict)
+        return model
 
     @torch.jit.unused
     @property
@@ -112,9 +131,7 @@ class BaseReactionModel(torch.nn.Module, ABC):
         :return: Mask tensor indicating nodes belonging to the initial subgraphs.
         """
         # Initialize mask tensor of the same size as batch, filled with False
-        mask_tensor = torch.zeros_like(data[K.batch],
-                                       dtype=torch.bool,
-                                       device=data[K.batch].device)
+        mask_tensor = torch.zeros_like(data[K.batch], dtype=torch.bool, device=data[K.batch].device)
 
         # Iterate through each data point in the data[K.batch]
         for data_point in torch.unique(data[K.batch]):

@@ -15,8 +15,8 @@ from rgnn.models.nn.scale import ScaleShift
 from .base import BaseReactionModel
 
 
-@registry.register_reaction_model("painn_reaction_0")
-class PaiNN_0(BaseReactionModel):
+@registry.register_reaction_model("painn_reaction")
+class PaiNNold(BaseReactionModel):
     """PaiNN model, as described in https://arxiv.org/abs/2102.03150.
     This model applies equivariant message passing layers within cartesian coordinates.
     Provides "node_features" and "node_vec_features" embeddings.
@@ -60,8 +60,6 @@ class PaiNN_0(BaseReactionModel):
     ):
         super().__init__(species, cutoff)
         # TODO: Should be more rigorous
-        species.sort()
-        self.species = species
         self.hidden_channels = hidden_channels
         self.n_interactions = n_interactions
         self.rbf_type = rbf_type
@@ -105,7 +103,7 @@ class PaiNN_0(BaseReactionModel):
             b_init="zeros",
         )
         self.reaction_output = MLP(
-            n_input=reaction_feat,
+            n_input=reaction_feat + 1,
             n_output=2,
             hidden_layers=(reaction_feat, reaction_feat),
             activation="silu",
@@ -138,6 +136,7 @@ class PaiNN_0(BaseReactionModel):
         # Compute system energy
         energy_total_r = scatter(energy_r, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
         energy_total_p = scatter(energy_p, data[K.batch][~mask_tensor_r], dim=0, reduce="sum")
+        energy_reaction = torch.sub(energy_total_p, energy_total_r)
 
         # Reaction
         node_feat_r = data[K.node_features][mask_tensor_r]
@@ -146,6 +145,8 @@ class PaiNN_0(BaseReactionModel):
         reaction_feat = self.reaction_representation(feature_diff)
 
         reaction_feat = scatter(reaction_feat, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
+        reaction_feat = torch.cat([energy_reaction.unsqueeze(-1), reaction_feat], dim=-1)
+        reaction_feat = F.normalize(reaction_feat, dim=-1)
         data[K.reaction_features] = reaction_feat
 
         barrier_out = self.reaction_output(reaction_feat)
@@ -154,7 +155,17 @@ class PaiNN_0(BaseReactionModel):
             barrier = self.scale_shift(K.barrier, barrier)
             freq = self.scale_shift(K.freq, freq)
 
-        return energy_total_r, energy_total_p, barrier.squeeze(-1), freq.squeeze(-1)
+        outputs = {}
+        delta_e = energy_total_p - energy_total_r
+        if self.scale_output:
+            delta_e = self.scale_shift(K.delta_e, delta_e)
+        outputs[K.energy_i] = energy_total_p
+        outputs[K.energy_f] = energy_total_p
+        outputs[K.delta_e] = delta_e
+        outputs[K.barrier] = barrier.squeeze(-1)
+        outputs[K.freq] = freq.squeeze(-1)
+
+        return outputs
 
     def get_hyperparams(self) -> Dict[str, Any]:
         hyperparams = {
@@ -174,3 +185,32 @@ class PaiNN_0(BaseReactionModel):
             "stddevs": self.stddevs,
         }
         return hyperparams
+
+    @torch.jit.unused
+    def save(self, filename: str):
+        state_dict = self.state_dict()
+        hyperparams = self.hyperparams
+        state = {"state_dict": state_dict, "hyper_parameters": hyperparams}
+
+        torch.save(state, filename)
+
+    # "best_metric": best_metric,
+    @torch.jit.unused
+    @classmethod
+    def load(cls, path: str):
+        """Load the model from checkpoint created by pytorch lightning.
+
+        Args:
+            path (str): Path to the checkpoint file.
+
+        Returns:
+            InterAtomicPotential: The loaded model.
+        """
+        map_location = None if torch.cuda.is_available() else "cpu"
+        ckpt = torch.load(path, map_location=map_location)
+        hparams = ckpt["hyper_parameters"]
+        del hparams["name"]
+        state_dict = ckpt["state_dict"]
+        model = cls(**hparams)
+        model.load_state_dict(state_dict=state_dict)
+        return model

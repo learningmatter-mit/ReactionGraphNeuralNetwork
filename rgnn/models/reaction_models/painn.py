@@ -11,11 +11,12 @@ from rgnn.graph.utils import compute_neighbor_vecs
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.painn.representation import PaiNNRepresentation
 from rgnn.models.nn.scale import ScaleShift
+from rgnn.models.nn.pool import AttentionPool
 
 from .base import BaseReactionModel
 
 
-@registry.register_reaction_model("painn_reaction")
+@registry.register_reaction_model("painn")
 class PaiNN(BaseReactionModel):
     """PaiNN model, as described in https://arxiv.org/abs/2102.03150.
     This model applies equivariant message passing layers within cartesian coordinates.
@@ -57,6 +58,7 @@ class PaiNN(BaseReactionModel):
         epsilon: float = 1e-8,
         means=None,
         stddevs=None,
+        pool_method="attention",
     ):
         super().__init__(species, cutoff)
         # TODO: Should be more rigorous
@@ -110,6 +112,13 @@ class PaiNN(BaseReactionModel):
             w_init="xavier_uniform",
             b_init="zeros",
         )
+        self.pool_method = pool_method
+        if self.pool_method == "attention":
+            self.pool = AttentionPool(
+                feat_dim=reaction_feat,
+                att_act="silu",
+                prob_func="softmax",
+            )
         self.reset_parameters()
         if means is not None and stddevs is not None:
             self.scale_output = True
@@ -143,8 +152,10 @@ class PaiNN(BaseReactionModel):
         node_feat_f = data[K.node_features][~mask_tensor_r]
         feature_diff = torch.sub(node_feat_f, node_feat_r)
         reaction_feat = self.reaction_representation(feature_diff)
-
-        reaction_feat = scatter(reaction_feat, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
+        if self.pool_method == "attention":
+            reaction_feat = self.pool(data, reaction_feat)
+        elif self.pool_method == "sum":
+            reaction_feat = scatter(reaction_feat, data[K.batch][mask_tensor_r], dim=0, reduce="sum")
         reaction_feat = torch.cat([energy_reaction.unsqueeze(-1), reaction_feat], dim=-1)
         reaction_feat = F.normalize(reaction_feat, dim=-1)
         data[K.reaction_features] = reaction_feat
@@ -159,7 +170,7 @@ class PaiNN(BaseReactionModel):
         delta_e = energy_total_p - energy_total_r
         if self.scale_output:
             delta_e = self.scale_shift(K.delta_e, delta_e)
-        outputs[K.energy_i] = energy_total_p
+        outputs[K.energy_i] = energy_total_r
         outputs[K.energy_f] = energy_total_p
         outputs[K.delta_e] = delta_e
         outputs[K.barrier] = barrier.squeeze(-1)
@@ -169,7 +180,7 @@ class PaiNN(BaseReactionModel):
 
     def get_hyperparams(self) -> Dict[str, Any]:
         hyperparams = {
-            "name": "painn_reaction",
+            "name": "painn",
             "species": self.species,
             "cutoff": self.cutoff,
             "hidden_channels": self.hidden_channels,
@@ -189,7 +200,7 @@ class PaiNN(BaseReactionModel):
     @torch.jit.unused
     def save(self, filename: str):
         state_dict = self.state_dict()
-        hyperparams = self.hyperparams
+        hyperparams = self.get_config()
         state = {"state_dict": state_dict, "hyper_parameters": hyperparams}
 
         torch.save(state, filename)
@@ -209,7 +220,10 @@ class PaiNN(BaseReactionModel):
         map_location = None if torch.cuda.is_available() else "cpu"
         ckpt = torch.load(path, map_location=map_location)
         hparams = ckpt["hyper_parameters"]
-        del hparams["name"]
+        if hparams.get("name", None) is not None:
+            hparams.pop("name")
+        elif hparams.get("@name", None) is not None:
+            hparams.pop("@name")
         state_dict = ckpt["state_dict"]
         model = cls(**hparams)
         model.load_state_dict(state_dict=state_dict)

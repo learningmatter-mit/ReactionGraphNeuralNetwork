@@ -5,7 +5,6 @@ from typing import Dict
 from rgnn.graph.utils import batch_to
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from rgnn.models.reaction import ReactionDQN, ReactionDQN2
 
 MAX_EPOCHS = 100
 BEST_METRIC = 1e10
@@ -139,12 +138,6 @@ class Trainer:
             best_loss = min(val_loss, best_loss)
 
             # best_metric = min(val_metric, best_m'etric)
-            if isinstance(self.model, ReactionDQN):
-                hyperparams = self.model.reaction_model.hyperparams
-            elif isinstace(self.mode, ReactionDQN2):
-                hyperparams = self.model.reaction_model.hyperparams
-            else:
-                hyperparams = self.model.hyperparams
             if self.normalizer is not None:
                 normalizer_dict = {}
                 for key, val in self.normalizer.items():
@@ -154,7 +147,7 @@ class Trainer:
                     {
                         "epoch": epoch + 1,
                         "state_dict": self.model.state_dict(),
-                        "hyper_parameters": hyperparams,
+                        "hyper_parameters": self.model.get_config(),
                         # "best_metric": best_metric,
                         "best_loss": best_loss,
                         "optimizer": self.optimizer.state_dict(),
@@ -169,7 +162,7 @@ class Trainer:
                     {
                         "epoch": epoch + 1,
                         "state_dict": self.model.state_dict(),
-                        "hyper_parameters": hyperparams,
+                        "hyper_parameters": self.model.get_config(),
                         # "best_metric": best_metric,
                         "best_loss": best_loss,
                         "optimizer": self.optimizer.state_dict(),

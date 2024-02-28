@@ -144,7 +144,6 @@ class Registry:
         # Use `registry.register_builder` to register a builder class
         # with a specific name
         "model_name_mapping": {},
-        "energy_model_name_mapping": {},
         "reaction_model_name_mapping": {},
         "loss_name_mapping": {},
         "optimizer_name_mapping": _find_all_torch_optimizers(),
@@ -250,16 +249,6 @@ class Registry:
         return wrap
 
     @classmethod
-    def register_energy_model(cls, name):
-        def wrap(func):
-            func.name = name
-            func.category = "energy_model"
-            cls.mapping["energy_model_name_mapping"][name] = func
-            return func
-
-        return wrap
-
-    @classmethod
     def register_optimizer(cls, name):
         def wrap(func):
             func.name = name
@@ -324,19 +313,14 @@ class Registry:
             raise ValueError("No such object: {}. Available items: {}".format(name, list(cls.mapping[map_key].keys())))
         return cls.mapping[map_key].get(name, None)
 
-    # @classmethod
-    # def get_callback_class(cls, name):
-    #     key = "callback_name_mapping"
-    #     return cls._get(name, key)
+    @classmethod
+    def get_callback_class(cls, name):
+        key = "callback_name_mapping"
+        return cls._get(name, key)
 
     @classmethod
     def get_model_class(cls, name):
         key = "model_name_mapping"
-        return cls._get(name, key)
-
-    @classmethod
-    def get_energy_model_class(cls, name):
-        key = "energy_model_name_mapping"
         return cls._get(name, key)
 
     @classmethod

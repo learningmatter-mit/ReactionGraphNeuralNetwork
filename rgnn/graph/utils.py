@@ -95,3 +95,15 @@ def batch_to(batch, device):
     return gpu_batch
 
 
+def get_batch_size(batch: DataDict) -> int:
+    """Get the batch size of a data batch.
+
+    Args:
+        batch (DataDict): The data batch.
+
+    Returns:
+        int: The batch size.
+    """
+    if K.batch in batch:
+        return batch[K.batch][-1] + 1
+    return 1
