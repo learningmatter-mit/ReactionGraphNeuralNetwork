@@ -102,12 +102,8 @@ class BaseReactionModel(torch.nn.Module, Configurable, ABC):
         map_location = None if torch.cuda.is_available() else "cpu"
         ckpt = torch.load(path, map_location=map_location)
         hparams = ckpt["hyper_parameters"]
-        # if hparams.get("name", None) is not None:
-        #     hparams.pop("name")
-        # elif hparams.get("@name", None) is not None:
-        #     hparams.pop("@name")
         state_dict = ckpt["state_dict"]
-        model = cls.from_config(**hparams)
+        model = cls.from_config(hparams)
         model.load_state_dict(state_dict=state_dict)
         return model
 

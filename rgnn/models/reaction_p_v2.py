@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import Any, Dict, Literal, Tuple
+from typing import Any, Dict, Literal, Tuple, List
 
 import torch
 from torch.nn import functional as F
@@ -15,8 +15,8 @@ from rgnn.models.nn.painn.representation import PaiNNRepresentation
 from rgnn.models.nn.scale import PerSpeciesScaleShift, canocialize_species
 
 
-@registry.register_model("p_net")
-class PNet(torch.nn.Module, Configurable, ABC):
+@registry.register_model("p_net_v2")
+class PNet2(torch.nn.Module, Configurable, ABC):
     """PaiNN model, as described in https://arxiv.org/abs/2102.03150.
     This model applies equivariant message passing layers within cartesian coordinates.
     Provides "node_features" and "node_vec_features" embeddings.
@@ -99,30 +99,22 @@ class PNet(torch.nn.Module, Configurable, ABC):
             shared_filters=shared_filters,
             epsilon=epsilon,
         )
-        # self.emb = MLP(
-        #     n_input=hidden_channels + 2,
-        #     n_output=N_emb,
-        #     hidden_layers=(N_emb,),
-        #     activation="leaky_relu",
-        #     w_init="xavier_uniform",
-        #     b_init="zeros",
-        #     dropout_rate=self.dropout_rate,
-        # )
         self.probs_out = MLP(
-            n_input=hidden_channels,
+            n_input=hidden_channels + len(self.atomic_numbers) + 1,
             n_output=1,
             hidden_layers=(self.n_feat, self.n_feat),
             activation="silu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
+        self.kb = 8.617 * 10**-5
         self.reset_parameters()
 
     def reset_parameters(self):
         self.representation.reset_parameters()
         self.probs_out.reset_parameters()
 
-    def forward(self, data: DataDict, kT: Tensor, elem_chempot: Dict[str, Tensor | float] | None = None):
+    def forward(self, data: DataDict):
         compute_neighbor_vecs(data)
         node_degrees = degree(data["edge_index"][0], num_nodes=torch.sum(data["n_atoms"]))
         new_features_list = []
@@ -131,28 +123,43 @@ class PNet(torch.nn.Module, Configurable, ABC):
             mask = data["batch"] == graph_id
             filtered_nodes = node_degrees[mask]
 
-            sorted_val, sorted_index = torch.sort(filtered_nodes, dim=-1, stable=True)
-            # connectivity_feat = sorted_index / data["n_atoms"][graph_id]
-            # new_feat = torch.cat([sorted_val.unsqueeze(-1), connectivity_feat.unsqueeze(-1)], dim=-1)
-            # new_features_list_2.append(new_feat)
+            _, sorted_index = torch.sort(filtered_nodes, dim=-1, stable=True)
             new_features_list.append(sorted_index)
         connectivity_feat = torch.concat(new_features_list, dim=0)
         data.update({K.elems: connectivity_feat})
         data = self.representation(data)
 
-        softmaxed_probabilities_list = []
-        # probs_feat = torch.concat([connectivity_feat, data[K.node_features]], dim=-1)
-        # emb = self.emb(probs_feat)
-        probability = self.probs_out(data[K.node_features]).squeeze(-1)
+        # Calculate elem_chempot
+        elem_chempot_list = []
+        for specie in self.species:
+            elem_chempot_list.append(data["elem_chempot"][specie])
+        elem_chempot_tensor = torch.stack(elem_chempot_list, dim=-1)
+        # print(
+        #     len(self.species),
+        #     data["kT"].dtype,
+        #     elem_chempot_tensor.dtype,
+        #     data[K.node_features].dtype,
+        #     data["kT"].shape,
+        #     elem_chempot_tensor.shape,
+        #     data[K.node_features].shape,
+        # )
+        probability = self.probs_out(
+            torch.cat([data["kT"].unsqueeze(-1), elem_chempot_tensor, data[K.node_features]], dim=-1)
+        ).squeeze(-1)
         sorted_batch, _ = torch.sort(torch.unique(data["batch"]))
+        softmaxed_probabilities_list = []
+        total_probabilities = torch.zeros(len(sorted_batch), device=data["n_atoms"].device)
         for i, graph_id in enumerate(sorted_batch):
             mask = data["batch"] == graph_id
             graph_probs = probability[mask]
-            softmaxed_probs = F.softmax(graph_probs / kT[i], dim=-1)
+            total_prob = torch.sum(torch.exp(graph_probs))
+            total_probabilities[i] = total_prob
+            softmaxed_probs = F.softmax(graph_probs / data["kT"][mask], dim=-1)
             softmaxed_probabilities_list.append(softmaxed_probs)
+        outputs = {"center_p": softmaxed_probabilities_list, "q_total": total_probabilities}
         # softmaxed_probabilities = torch.stack(softmaxed_probabilities_list, dim=0)
 
-        return softmaxed_probabilities_list
+        return outputs
 
     @torch.jit.unused
     def save(self, filename: str):

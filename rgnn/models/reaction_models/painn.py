@@ -205,26 +205,26 @@ class PaiNN(BaseReactionModel):
 
         torch.save(state, filename)
 
-    # "best_metric": best_metric,
-    @torch.jit.unused
-    @classmethod
-    def load(cls, path: str):
-        """Load the model from checkpoint created by pytorch lightning.
+    # # "best_metric": best_metric,
+    # @torch.jit.unused
+    # @classmethod
+    # def load(cls, path: str):
+    #     """Load the model from checkpoint created by pytorch lightning.
 
-        Args:
-            path (str): Path to the checkpoint file.
+    #     Args:
+    #         path (str): Path to the checkpoint file.
 
-        Returns:
-            InterAtomicPotential: The loaded model.
-        """
-        map_location = None if torch.cuda.is_available() else "cpu"
-        ckpt = torch.load(path, map_location=map_location)
-        hparams = ckpt["hyper_parameters"]
-        if hparams.get("name", None) is not None:
-            hparams.pop("name")
-        elif hparams.get("@name", None) is not None:
-            hparams.pop("@name")
-        state_dict = ckpt["state_dict"]
-        model = cls(**hparams)
-        model.load_state_dict(state_dict=state_dict)
-        return model
+    #     Returns:
+    #         InterAtomicPotential: The loaded model.
+    #     """
+    #     map_location = None if torch.cuda.is_available() else "cpu"
+    #     ckpt = torch.load(path, map_location=map_location)
+    #     hparams = ckpt["hyper_parameters"]
+    #     if hparams.get("name", None) is not None:
+    #         hparams.pop("name")
+    #     elif hparams.get("@name", None) is not None:
+    #         hparams.pop("@name")
+    #     state_dict = ckpt["state_dict"]
+    #     model = cls(**hparams)
+    #     model.load_state_dict(state_dict=state_dict)
+    #     return model

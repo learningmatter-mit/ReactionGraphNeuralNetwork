@@ -1,23 +1,19 @@
-from abc import ABC
 from typing import Dict
 
 import torch
-from torch import nn
 from torch.nn import functional as F
 
 from rgnn.common import keys as K
 from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, OutputDict, Tensor
 from rgnn.models.nn.mlp import MLP
-from rgnn.models.nn.scale import canocialize_species
 
 from rgnn.models.reaction_models.base import BaseReactionModel
 from .base import BaseDQN
 
 
-# TODO: Embedding layer before get 1 dim output
-@registry.register_model("dqn_2")
-class ReactionDQN_2(BaseDQN):
+@registry.register_model("dqn_v2")
+class ReactionDQN2(BaseDQN):
     """Interatomic potential model.
     It wraps an energy model and computes the energy, force, stress and hessian.
     The energy model should be a subclass of :class:`BaseEnergyModel`.
@@ -46,7 +42,7 @@ class ReactionDQN_2(BaseDQN):
 
         if canonical:
             self.Q_emb = MLP(
-                n_input=reaction_model.reaction_feat + 3,
+                n_input=reaction_model.reaction_feat + 1,
                 n_output=N_emb,
                 hidden_layers=(N_emb,),
                 activation="leaky_relu",
@@ -55,8 +51,8 @@ class ReactionDQN_2(BaseDQN):
                 dropout_rate=self.dropout_rate,
             )
             self.Q_output = MLP(
-                n_input=N_emb,
-                n_output=2,
+                n_input=N_emb + 2,
+                n_output=1,
                 hidden_layers=(N_feat, N_feat),
                 activation="leaky_relu",
                 w_init="xavier_uniform",
@@ -65,7 +61,7 @@ class ReactionDQN_2(BaseDQN):
             )
         else:
             self.Q_emb = MLP(
-                n_input=reaction_model.reaction_feat + len(self.reaction_model.atomic_numbers) + 2,
+                n_input=reaction_model.reaction_feat + 1,
                 n_output=N_emb,
                 hidden_layers=(N_emb,),
                 activation="leaky_relu",
@@ -74,8 +70,8 @@ class ReactionDQN_2(BaseDQN):
                 dropout_rate=self.dropout_rate,
             )
             self.Q_output = MLP(
-                n_input=N_emb,
-                n_output=len(self.reaction_model.atomic_numbers) + 1,
+                n_input=N_emb + len(self.reaction_model.atomic_numbers) + 1,
+                n_output=1,
                 hidden_layers=(N_feat, N_feat),
                 activation="leaky_relu",
                 w_init="xavier_uniform",
@@ -160,22 +156,13 @@ class ReactionDQN_2(BaseDQN):
         outputs[K.q1] = q_1.squeeze(-1)  # (N,)
         if dqn:
             dqn_feat = F.normalize(torch.cat([q_0, kT * q_1], dim=-1), dim=-1)
-            dqn_feat = torch.cat([dqn_feat, reaction_feat], dim=-1)
-            emb = self.Q_emb(dqn_feat)
-            # if emb.shape[0] != 1:
-            #     emb = self.bn(emb)
-            outputs[K.dqn_feat] = emb
-            q_out = self.Q_output(emb)
-            q_0 = q_out[:, 0].unsqueeze(-1)
-            q_1 = q_out[:, 1].unsqueeze(-1)
-
-        if alpha == 0.0:
-            rl_q = q_0
+            emb = self.Q_emb(reaction_feat)
+            total_feat = torch.cat([dqn_feat, emb], dim=-1)
+            outputs[K.dqn_feat] = total_feat
+            rl_q = self.Q_output(total_feat)
         else:
             rl_q = q_0 + q_1 * kT
         outputs[K.rl_q] = rl_q.squeeze(-1)  # (N,)
-        outputs[K.Q0] = q_0.squeeze(-1)  # (N,)
-        outputs[K.Q1] = q_1.squeeze(-1)  # (N,)
 
         return outputs
 
@@ -262,73 +249,14 @@ class ReactionDQN_2(BaseDQN):
         outputs[K.q2_i] = q_2_i  # (N, M) --> N: batch, M: number of elements
         if dqn:
             dqn_feat = F.normalize(torch.cat([q_0, kT * q_1, elem_chempot_tensor * q_2_i], dim=-1), dim=-1)
-            dqn_feat = torch.cat([dqn_feat, reaction_feat], dim=-1)
-            emb = self.Q_emb(dqn_feat)
-            # if emb.shape[0] != 1:
-            # emb = self.bn(emb)
+            emb = self.Q_emb(reaction_feat)
+            total_feat = torch.cat([dqn_feat, emb], dim=-1)
             outputs[K.dqn_feat] = emb
-            q_out = self.Q_output(emb)
-            q_0 = q_out[:, 0].unsqueeze(-1)
-            q_1 = q_out[:, 1].unsqueeze(-1)
-            q_2_i = q_out[:, 2:]
-        q_2 = torch.sum(q_2_i * elem_chempot_tensor, dim=-1, keepdim=True)
-        if alpha == 0.0 and beta != 0.0:
-            rl_q = q_0 + q_2
-        elif beta == 0.0 and alpha != 0.0:
-            rl_q = q_0 + q_1 * kT
+            rl_q = self.Q_output(total_feat)
         else:
+            q_2 = torch.sum(q_2_i * elem_chempot_tensor, dim=-1, keepdim=True)
             rl_q = q_0 + q_1 * kT + q_2
+
         outputs[K.rl_q] = rl_q.squeeze(-1)  # (N,)
-        outputs[K.Q0] = q_0.squeeze(-1)  # (N,)
-        outputs[K.Q1] = q_1.squeeze(-1)  # (N,)
-        outputs[K.Q2_i] = q_2_i  # (N, M) --> N: batch, M: number of elements, previous version
 
         return outputs
-
-    @torch.jit.unused
-    def save(self, filename: str):
-        state_dict = self.state_dict()
-        hyperparams = self.reaction_model.hyperparams
-        state = {
-            "state_dict": state_dict,
-            "hyper_parameters": hyperparams,
-            "n_emb": self.N_emb,
-            "n_feat": self.N_feat,
-            "dropout_rate": self.dropout_rate,
-            "canonical": self.canonical,
-        }
-
-        torch.save(state, filename)
-
-    @classmethod
-    def load(cls, path: str) -> "ReactionDQN3":
-        """Load the model from checkpoint created by pytorch lightning.
-
-        Args:
-            path (str): Path to the checkpoint file.
-
-        Returns:
-            InterAtomicPotential: The loaded model.
-        """
-        map_location = None if torch.cuda.is_available() else "cpu"
-        # if str(path).endswith(".ckpt"):
-        ckpt = torch.load(path, map_location=map_location)
-        hparams = ckpt["hyper_parameters"]
-        reaction_model_name = hparams["name"]
-        if reaction_model_name == "painn_reaction2":
-            reaction_model_name = "painn"
-        del hparams["name"]
-        # model_config = hparams["hyperparams"]
-        state_dict = ckpt["state_dict"]
-        N_feat = ckpt.get("n_feat", 32)  # TODO: Should be changed
-        N_emb = ckpt.get("n_emb", 16)  # TODO: Should be changed
-        dropout_rate = ckpt.get("dropout_rate", 0.15)
-        canonical = ckpt.get("canonical", False)
-        # state_dict = {
-        #     ".".join(k.split(".")[1:]): v for k, v in state_dict.items()
-        # }
-        reaction_model = registry.get_reaction_model_class(reaction_model_name)(**hparams)
-        # reaction_model = get_model(hparams)
-        model = cls(reaction_model, N_emb, N_feat, dropout_rate, canonical)
-        model.load_state_dict(state_dict=state_dict)
-        return model
