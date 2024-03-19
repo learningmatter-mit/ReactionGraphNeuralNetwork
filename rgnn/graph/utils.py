@@ -88,12 +88,23 @@ def compute_neighbor_vecs(data: DataDict) -> DataDict:
     return data
 
 
-def batch_to(batch, device):
-    gpu_batch = dict()
-    for key, val in batch.items():
-        gpu_batch[key] = val.to(device) if hasattr(val, "to") else val
-    return gpu_batch
+# def batch_to(batch, device):
+#     gpu_batch = dict()
+#     for key, val in batch.items():
+#         gpu_batch[key] = val.to(device) if hasattr(val, "to") else val
+#     return gpu_batch
 
+def batch_to(batch, device):
+    def to_device(val):
+        if hasattr(val, "to"):
+            return val.to(device)
+        elif isinstance(val, dict):
+            return {k: to_device(v) for k, v in val.items()}
+        else:
+            return val
+    
+    gpu_batch = {key: to_device(val) for key, val in batch.items()}
+    return gpu_batch
 
 def get_batch_size(batch: DataDict) -> int:
     """Get the batch size of a data batch.
