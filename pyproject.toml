@@ -20,7 +20,7 @@ dependencies = [
   "inflection",
   "torch_scatter",
   "torch_cluster",
-  "e3nn>=0.5.0",
+  "e3nn==0.4.4",
   "torch-ema",
   "rich",
   "tensorboard",
