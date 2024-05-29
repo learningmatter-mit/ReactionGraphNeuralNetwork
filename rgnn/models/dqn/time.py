@@ -125,12 +125,14 @@ class TNet(torch.nn.Module, Configurable, ABC):
             _type_: _description_
         """
         if temperature is not None:
-            kT = torch.tensor(data["T"] * self.kb, requires_grad=False).unsqueeze(-1)
+            kT = (data["T"] * self.kb).clone().detach().unsqueeze(-1)
             # kT = torch.tensor(temperature * self.kb, device=data[K.node_features].device, dtype=data[K.node_features].dtype, requires_grad=False).unsqueeze(-1)
         elif "T" in data.keys():
-            kT = torch.tensor(data["T"] * self.kb, requires_grad=False).unsqueeze(-1)
+            kT = (data["T"] * self.kb).clone().detach().unsqueeze(-1)
         else:
+            kT = (data["T"] * self.kb).clone().detach().unsqueeze(-1)
             print("bug")
+            print(data.keys())
 
         compute_neighbor_vecs(data)
         data = self.representation(data)
