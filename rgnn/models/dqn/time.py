@@ -124,12 +124,12 @@ class TNet(torch.nn.Module, Configurable, ABC):
         Returns:
             _type_: _description_
         """
-        compute_neighbor_vecs(data)
-        data = self.representation(data)
         if "T" not in data.keys():
             kT = torch.tensor(temperature * self.kb, device=data[K.node_features].device, dtype=data[K.node_features].dtype, requires_grad=False)
         else:
             kT = torch.tensor(data["T"] * self.kb, requires_grad=False).unsqueeze(-1)
+        compute_neighbor_vecs(data)
+        data = self.representation(data)
         atomwise_out = self.time_out(
             torch.cat([kT, data[K.node_features]], dim=-1)
         ).squeeze(-1)
