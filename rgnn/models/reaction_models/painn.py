@@ -10,8 +10,8 @@ from rgnn.common.typing import DataDict, Tensor
 from rgnn.graph.utils import compute_neighbor_vecs
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.painn.representation import PaiNNRepresentation
-from rgnn.models.nn.scale import ScaleShift
 from rgnn.models.nn.pool import AttentionPool
+from rgnn.models.nn.scale import ScaleShift
 
 from .base import BaseReactionModel
 
@@ -58,7 +58,7 @@ class PaiNN(BaseReactionModel):
         epsilon: float = 1e-8,
         means=None,
         stddevs=None,
-        pool_method="attention",
+        pool_method="sum",
     ):
         super().__init__(species, cutoff)
         # TODO: Should be more rigorous
@@ -74,7 +74,8 @@ class PaiNN(BaseReactionModel):
         self.means = means
         self.stddevs = stddevs
         self.reaction_feat = reaction_feat
-        self.hyperparams = self.get_hyperparams()
+        self.pool_method = pool_method
+        self.hyperparams = self.get_hyperparams() # TODO: Can be deleted?
 
         self.representation = PaiNNRepresentation(
             hidden_channels=hidden_channels,
@@ -112,7 +113,7 @@ class PaiNN(BaseReactionModel):
             w_init="xavier_uniform",
             b_init="zeros",
         )
-        self.pool_method = pool_method
+
         if self.pool_method == "attention":
             self.pool = AttentionPool(
                 feat_dim=reaction_feat,
@@ -194,6 +195,7 @@ class PaiNN(BaseReactionModel):
             "shared_filters": self.shared_filters,
             "means": self.means,
             "stddevs": self.stddevs,
+            "pool_method": self.pool_method
         }
         return hyperparams
 
@@ -205,7 +207,6 @@ class PaiNN(BaseReactionModel):
 
         torch.save(state, filename)
 
-    # # "best_metric": best_metric,
     # @torch.jit.unused
     # @classmethod
     # def load(cls, path: str):
@@ -220,11 +221,10 @@ class PaiNN(BaseReactionModel):
     #     map_location = None if torch.cuda.is_available() else "cpu"
     #     ckpt = torch.load(path, map_location=map_location)
     #     hparams = ckpt["hyper_parameters"]
-    #     if hparams.get("name", None) is not None:
-    #         hparams.pop("name")
-    #     elif hparams.get("@name", None) is not None:
-    #         hparams.pop("@name")
+    #     del hparams["name"]
     #     state_dict = ckpt["state_dict"]
     #     model = cls(**hparams)
+    #     print(state_dict.keys())
+    #     print(model.pool_method)
     #     model.load_state_dict(state_dict=state_dict)
     #     return model

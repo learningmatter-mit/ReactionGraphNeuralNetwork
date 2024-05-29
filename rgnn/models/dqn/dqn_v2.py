@@ -104,8 +104,8 @@ class ReactionDQN2(BaseDQN):
                 q_params["dqn"],
                 q_params["temperature"] * self.kb,
                 q_params["elem_chempot"],
-                q_params["max_mu"],
-                q_params["mean_mu"],
+                q_params.get("max_mu", None),
+                q_params.get("mean_mu", None),
             )
         return results
 
