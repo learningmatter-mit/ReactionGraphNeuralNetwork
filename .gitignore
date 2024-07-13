@@ -161,5 +161,7 @@ cython_debug/
 
 # data
 data/*
-dev
+dev/*
+!data/
+!dev/
 rlmd
