@@ -7,8 +7,8 @@ import torch
 import torch.nn
 
 from rgnn.common import keys as K
-from rgnn.common.registry import registry
 from rgnn.common.configuration import Configurable
+from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict
 
 

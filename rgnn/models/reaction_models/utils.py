@@ -1,8 +1,10 @@
-from typing import Union, Dict, List
-from rgnn.graph.dataset.reaction import ReactionDataset
-from rgnn.common.typing import Tensor
+from typing import Dict, List, Union
+
 import torch
 from torch import nn
+
+from rgnn.common.typing import Tensor
+from rgnn.graph.dataset.reaction import ReactionDataset
 
 
 class Normalizer:

@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import Any, Dict, Literal, Tuple
+from typing import Any, Dict, Literal, Tuple, List
 
 import torch
 from torch.nn import functional as F
@@ -99,30 +99,22 @@ class PNet(torch.nn.Module, Configurable, ABC):
             shared_filters=shared_filters,
             epsilon=epsilon,
         )
-        # self.emb = MLP(
-        #     n_input=hidden_channels + 2,
-        #     n_output=N_emb,
-        #     hidden_layers=(N_emb,),
-        #     activation="leaky_relu",
-        #     w_init="xavier_uniform",
-        #     b_init="zeros",
-        #     dropout_rate=self.dropout_rate,
-        # )
         self.probs_out = MLP(
-            n_input=hidden_channels,
+            n_input=hidden_channels + len(self.atomic_numbers) + 2,
             n_output=1,
             hidden_layers=(self.n_feat, self.n_feat),
             activation="silu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
+        self.kb = 8.617 * 10**-5
         self.reset_parameters()
 
     def reset_parameters(self):
         self.representation.reset_parameters()
         self.probs_out.reset_parameters()
 
-    def forward(self, data: DataDict, kT: Tensor, elem_chempot: Dict[str, Tensor | float] | None = None):
+    def forward(self, data: DataDict):
         compute_neighbor_vecs(data)
         node_degrees = degree(data["edge_index"][0], num_nodes=torch.sum(data["n_atoms"]))
         new_features_list = []
@@ -131,29 +123,78 @@ class PNet(torch.nn.Module, Configurable, ABC):
             mask = data["batch"] == graph_id
             filtered_nodes = node_degrees[mask]
 
-            sorted_val, sorted_index = torch.sort(filtered_nodes, dim=-1, stable=True)
-            # connectivity_feat = sorted_index / data["n_atoms"][graph_id]
-            # new_feat = torch.cat([sorted_val.unsqueeze(-1), connectivity_feat.unsqueeze(-1)], dim=-1)
-            # new_features_list_2.append(new_feat)
+            _, sorted_index = torch.sort(filtered_nodes, dim=-1, stable=True)
             new_features_list.append(sorted_index)
         connectivity_feat = torch.concat(new_features_list, dim=0)
-        data.update({K.elems: connectivity_feat})
+        # data.update({K.elems: connectivity_feat})
         data = self.representation(data)
 
-        softmaxed_probabilities_list = []
-        # probs_feat = torch.concat([connectivity_feat, data[K.node_features]], dim=-1)
-        # emb = self.emb(probs_feat)
-        probability = self.probs_out(data[K.node_features]).squeeze(-1)
+        # Calculate elem_chempot
+        elem_chempot_list = []
+        for specie in self.species:
+            elem_chempot_list.append(data["elem_chempot"][specie])
+        elem_chempot_tensor = torch.stack(elem_chempot_list, dim=-1)
+        # print(
+        #     len(self.species),
+        #     data["kT"].dtype,
+        #     elem_chempot_tensor.dtype,
+        #     data[K.node_features].dtype,
+        #     data["kT"].shape,
+        #     elem_chempot_tensor.shape,
+        #     data[K.node_features].shape,
+        # )
+        probability = self.probs_out(
+            torch.cat([data["kT"].unsqueeze(-1), elem_chempot_tensor, connectivity_feat.unsqueeze(-1), data[K.node_features]], dim=-1)
+        ).squeeze(-1)
         sorted_batch, _ = torch.sort(torch.unique(data["batch"]))
+        softmaxed_probabilities_list = []
+        total_probabilities = torch.zeros(len(sorted_batch), device=data["n_atoms"].device)
         for i, graph_id in enumerate(sorted_batch):
             mask = data["batch"] == graph_id
             graph_probs = probability[mask]
-            softmaxed_probs = F.softmax(graph_probs / kT[i], dim=-1)
+            total_prob = torch.sum(torch.exp(graph_probs))
+            total_probabilities[i] = total_prob
+            softmaxed_probs = F.softmax(graph_probs / data["kT"][mask], dim=-1)
             softmaxed_probabilities_list.append(softmaxed_probs)
+        outputs = {"center_p": softmaxed_probabilities_list, "q_total": total_probabilities}
         # softmaxed_probabilities = torch.stack(softmaxed_probabilities_list, dim=0)
 
-        return softmaxed_probabilities_list
+        return outputs
 
+    def get_config(self):
+        config = {}
+        config["@name"] = self.__class__.name
+        config.update(super().get_config())
+        return config
+    
+    @classmethod
+    def load_representation(cls, reaction_model, n_feat, dropout_rate):
+        # Extract configuration from the existing model
+        reaction_model_params = reaction_model.get_config()
+        
+        # Define the keys that you want to copy from the existing model's config
+        input_keys = [
+            "species", "cutoff", "hidden_channels", "n_interactions",
+            "rbf_type", "n_rbf", "trainable_rbf", "activation",
+            "shared_interactions", "shared_filters", "epsilon"
+        ]
+        
+        # Create a dictionary of parameters to initialize the new model
+        input_params = {key: reaction_model_params[key] for key in input_keys}
+        
+        # Initialize the new model with the copied parameters and additional features
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate)
+        
+        # Load only the state_dict entries that include 'representation' in their key,
+        # assuming these belong to the shared blocks or relevant components
+        loaded_state_dict = reaction_model.state_dict()
+        shared_block_keys = {k: v for k, v in loaded_state_dict.items() if 'representation' in k}
+        
+        # Partially load state_dict into the new model, without requiring an exact match
+        model.load_state_dict(shared_block_keys, strict=False)
+        
+        return model
+        
     @torch.jit.unused
     def save(self, filename: str):
         state_dict = self.state_dict()
