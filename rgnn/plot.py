@@ -1,20 +1,13 @@
 import warnings
 from csv import reader
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.cm import (
-    ScalarMappable,
-    cividis,
-    inferno,
-    magma,
-    plasma,
-    turbo,
-    viridis,
-)
+from matplotlib.cm import (ScalarMappable, cividis, inferno, magma, plasma,
+                           turbo, viridis)
 from matplotlib.colors import LogNorm, Normalize, to_hex
 from pandas import options
 from pymatgen.core.periodic_table import Element
@@ -22,7 +15,6 @@ from pymatgen.core.structure import Structure
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import mean_absolute_error
 from tqdm import tqdm
-
 
 PROPERTIES = {
     "center_diff": "B 3d $-$ O 2p difference",
@@ -40,7 +32,7 @@ PROPERTIES = {
     "phonon": "Atomic vibration frequency",
     "bader": "Bader charge",
     "freq": "ln($\\nu_{a}$ /THz)",
-    "barrier": "$E_{b}$",
+    "barrier": "$E_{a}$",
     "delta_e": "$\\Delta E$",
 }
 

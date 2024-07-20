@@ -60,7 +60,8 @@ class TNet(torch.nn.Module, Configurable, ABC):
         n_feat: int = 32,
         dropout_rate: float = 0.15,
         tau: float = 15,
-        T_scaler_m: float = 7.918951990135469,
+        T_scaler_m: float = 7.918951990135469, 
+        D_scaler: float = 0.00390625 # 1/256
     ):
         super().__init__()
         atomic_numbers = [val.item() for val in canocialize_species(species)]
@@ -91,6 +92,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         self.n_feat = n_feat
         self.tau = tau
         self.T_scaler_m = T_scaler_m
+        self.D_scaler = D_scaler
 
         self.representation = PaiNNRepresentation(
             hidden_channels=hidden_channels,
@@ -158,7 +160,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
 
         time = F.tanh(F.softplus(self.time_out(graph_out))).squeeze(-1)
         self.scaler = torch.exp(self.T_scaler_m*(1000/batch_temperature-2))  #referenced to 500 K
-        self.defect_scaler = 1 / (defect * data["n_atoms"]) #referenced to 1 defect
+        self.defect_scaler = self.D_scaler / defect #referenced to 1/256
         time_final = time*self.tau*self.scaler*self.defect_scaler
 
         return time_final
@@ -171,7 +173,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         return config
     
     @classmethod
-    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau, T_scaler_m):
+    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau, T_scaler_m, D_scaler):
         # Extract configuration from the existing model
         reaction_model_params = reaction_model.get_config()
         
@@ -186,7 +188,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         input_params = {key: reaction_model_params[key] for key in input_keys}
         
         # Initialize the new model with the copied parameters and additional features
-        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau=tau, T_scaler_m=T_scaler_m)
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau=tau, T_scaler_m=T_scaler_m, D_scaler=D_scaler)
         
         # Load only the state_dict entries that include 'representation' in their key,
         # assuming these belong to the shared blocks or relevant components
