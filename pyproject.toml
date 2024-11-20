@@ -25,7 +25,6 @@ dependencies = [
   "rich",
   "tensorboard",
   "matscipy",
-  "ase-extension",
 ]
 dynamic = ["version"]
 license = {text = "MIT"}
