@@ -125,7 +125,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
     def set_scaler(self, means, stddevs):
         self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
     
-    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False):
+    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, pooling: str = "sum"):
         """_summary_
 
         Args:
@@ -155,7 +155,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         batch_temperature = kT/self.kb
         compute_neighbor_vecs(data)
         data = self.representation(data)
-        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce="sum")
+        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=pooling)
         graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
 
         time = F.tanh(F.softplus(self.time_out(graph_out))).squeeze(-1)
@@ -337,7 +337,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
     def set_scaler(self, means, stddevs):
         self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
     
-    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False):
+    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False, pooling: str = "sum"):
         """_summary_
 
         Args:
@@ -367,7 +367,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         batch_temperature = kT/self.kb
         compute_neighbor_vecs(data)
         data = self.representation(data)
-        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce="sum")
+        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=pooling)
         graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
         time_out = self.time_out(graph_out)
         time = F.tanh(F.softplus(time_out[:,1])).squeeze(-1)
