@@ -1,14 +1,14 @@
 from abc import ABC
-from typing import Any, Dict, Literal, Tuple, List
+from typing import Any, Dict, List, Literal, Tuple
 
 import torch
 from torch.nn import functional as F
-from torch_geometric.utils import scatter
-from torch_geometric.utils import degree
+from torch_geometric.utils import degree, scatter
+
 from rgnn.common import keys as K
+from rgnn.common.configuration import Configurable
 from rgnn.common.registry import registry
 from rgnn.common.typing import DataDict, Tensor
-from rgnn.common.configuration import Configurable
 from rgnn.graph.utils import compute_neighbor_vecs
 from rgnn.models.nn.mlp import MLP
 from rgnn.models.nn.painn.representation import PaiNNRepresentation
@@ -54,10 +54,10 @@ class PNet(torch.nn.Module, Configurable, ABC):
         shared_interactions: bool = False,
         shared_filters: bool = False,
         epsilon: float = 1e-8,
-        # canonical: bool = False,
-        # N_emb: int = 16,
         n_feat: int = 32,
         dropout_rate: float = 0.15,
+        threshold: float | None = None,
+        gamma: float | None = None,
     ):
         super().__init__()
         atomic_numbers = [val.item() for val in canocialize_species(species)]
@@ -100,22 +100,31 @@ class PNet(torch.nn.Module, Configurable, ABC):
             epsilon=epsilon,
         )
         self.probs_out = MLP(
-            n_input=hidden_channels + len(self.atomic_numbers) + 2,
+            n_input=hidden_channels + 2,
             n_output=1,
             hidden_layers=(self.n_feat, self.n_feat),
-            activation="silu",
+            activation="leaky_relu",
             w_init="xavier_uniform",
             b_init="zeros",
         )
         self.kb = 8.617 * 10**-5
+        self.threshold = threshold
+        self.gamma = gamma
         self.reset_parameters()
 
     def reset_parameters(self):
         self.representation.reset_parameters()
         self.probs_out.reset_parameters()
 
-    def forward(self, data: DataDict):
+    def forward(self, data: DataDict, kT: Tensor | float, actions: Tensor | None = None) -> DataDict:
         compute_neighbor_vecs(data)
+        if isinstance(kT, Tensor):
+            kT = kT.unsqueeze(-1)
+        elif isinstance(kT, float):
+            kT = torch.as_tensor(kT, dtype=torch.float, device=data["n_atoms"].device)
+            kT = kT.repeat(data["elems"].shape[0], 1)
+        else:
+            raise TypeError("kT type is wrong or not provided")
         node_degrees = degree(data["edge_index"][0], num_nodes=torch.sum(data["n_atoms"]))
         new_features_list = []
         # new_features_list_2 = []
@@ -128,35 +137,38 @@ class PNet(torch.nn.Module, Configurable, ABC):
         connectivity_feat = torch.concat(new_features_list, dim=0)
         # data.update({K.elems: connectivity_feat})
         data = self.representation(data)
-
-        # Calculate elem_chempot
-        elem_chempot_list = []
-        for specie in self.species:
-            elem_chempot_list.append(data["elem_chempot"][specie])
-        elem_chempot_tensor = torch.stack(elem_chempot_list, dim=-1)
-        # print(
-        #     len(self.species),
-        #     data["kT"].dtype,
-        #     elem_chempot_tensor.dtype,
-        #     data[K.node_features].dtype,
-        #     data["kT"].shape,
-        #     elem_chempot_tensor.shape,
-        #     data[K.node_features].shape,
-        # )
+        mask_tensor_r = self.create_subgraph_mask(data)
         probability = self.probs_out(
-            torch.cat([data["kT"].unsqueeze(-1), elem_chempot_tensor, connectivity_feat.unsqueeze(-1), data[K.node_features]], dim=-1)
-        ).squeeze(-1)
-        sorted_batch, _ = torch.sort(torch.unique(data["batch"]))
-        softmaxed_probabilities_list = []
-        total_probabilities = torch.zeros(len(sorted_batch), device=data["n_atoms"].device)
-        for i, graph_id in enumerate(sorted_batch):
-            mask = data["batch"] == graph_id
-            graph_probs = probability[mask]
-            total_prob = torch.sum(torch.exp(graph_probs))
-            total_probabilities[i] = total_prob
-            softmaxed_probs = F.softmax(graph_probs / data["kT"][mask], dim=-1)
-            softmaxed_probabilities_list.append(softmaxed_probs)
-        outputs = {"center_p": softmaxed_probabilities_list, "q_total": total_probabilities}
+            torch.cat([kT, connectivity_feat.unsqueeze(-1), data[K.node_features]], dim=-1)
+        )[mask_tensor_r]
+
+        limits = self.threshold / (1-self.gamma)
+        rl_q = limits * torch.tanh(probability)
+        rl_q = rl_q.squeeze(-1)
+        #This can be only done for single data
+
+        if "focal_actions" in data.keys(): # Training (batch data)
+            # Verify focal_actions length matches batch size
+            assert len(data["focal_actions"]) == len(data["n_atoms_i"]), \
+                f"Focal actions length ({len(data['focal_actions'])}) doesn't match batch size ({len(data['n_atoms_i'])})"
+            
+            # Calculate cumulative offsets
+            cumsum_atoms = torch.cat([
+                torch.tensor([0], device=rl_q.device),
+                torch.cumsum(data["n_atoms_i"][:-1], dim=0)
+            ])
+            # Verify indices are within bounds
+            # print(data["focal_actions"], data["num_atoms_i"])
+            assert torch.all(data["focal_actions"] < data["n_atoms_i"]), \
+                "Focal action indices exceed number of atoms in graphs"
+            
+            # Calculate batch-adjusted indices
+            batch_focal_actions = data["focal_actions"] + cumsum_atoms
+            # print(batch_focal_actions)
+            outputs = {"rl_q": rl_q[batch_focal_actions]}
+        else: # Inference one data
+            softmaxed_probs = F.softmax(rl_q / kT[mask_tensor_r].squeeze(-1), dim=-1)
+            outputs = {"focal_p": softmaxed_probs, "rl_q": rl_q}
         # softmaxed_probabilities = torch.stack(softmaxed_probabilities_list, dim=0)
 
         return outputs
@@ -223,3 +235,33 @@ class PNet(torch.nn.Module, Configurable, ABC):
         model = cls.from_config(hparams)
         model.load_state_dict(state_dict=state_dict)
         return model
+
+    def set_q_threshold(self, threshold: float, gamma: float):
+        self.threshold = threshold
+        self.gamma = gamma
+
+    def create_subgraph_mask(self, data):
+        """
+        Create a mask tensor for the initial subgraphs in each data point of the batch.
+
+        :param batch: Tensor indicating the data point each node belongs to.
+        :param n_atoms_i: Tensor with the number of nodes in the initial subgraph of each data point.
+        :param n_atoms_f: Tensor with the number of nodes in the final subgraph of each data point.
+        :return: Mask tensor indicating nodes belonging to the initial subgraphs.
+        """
+        # Initialize mask tensor of the same size as batch, filled with False
+        mask_tensor = torch.zeros_like(data[K.batch], dtype=torch.bool, device=data[K.batch].device)
+
+        # Iterate through each data point in the data[K.batch]
+        for data_point in torch.unique(data[K.batch]):
+            # Find the indices where this data point appears in the data[K.batch]
+            indices = (data[K.batch] == data_point).nonzero(as_tuple=True)[0]
+
+            # Calculate the start and end index for the initial subgraph of this data point
+            start_idx = indices[0]
+            end_idx = start_idx + data[K.n_atoms_i][data_point]
+
+            # Set the corresponding elements in the mask tensor to True
+            mask_tensor[start_idx:end_idx] = 1
+
+        return mask_tensor
