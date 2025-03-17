@@ -37,8 +37,8 @@ class AtomsDataset(TorchDataset):
         size = _determine_size(self, size)
         indices = torch.randperm(len(self), generator=torch.Generator().manual_seed(seed))
         if return_idx:
-            return (self[indices[:size]], self[indices[size:]]), (indices[:size], indices[size:])
-        return self[indices[:size]], self[indices[size:]]
+            return (self.__class__(self[indices[:size]]), self.__class__(self[indices[size:]])), (indices[:size], indices[size:])
+        return self.__class__(self[indices[:size]]), self.__class__(self[indices[size:]])
 
     def train_val_test_split(
         self,
