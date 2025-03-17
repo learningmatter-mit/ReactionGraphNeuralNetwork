@@ -61,7 +61,8 @@ class TNet(torch.nn.Module, Configurable, ABC):
         dropout_rate: float = 0.15,
         tau: float = 15,
         T_scaler_m: float = 7918.951990135471, 
-        D_scaler: float = 0.00390625 # 1/256
+        D_scaler: float = 0.00390625, # 1/256
+        pooling: str = "sum",
     ):
         super().__init__()
         atomic_numbers = [val.item() for val in canocialize_species(species)]
@@ -93,6 +94,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         self.tau = tau
         self.T_scaler_m = T_scaler_m
         self.D_scaler = D_scaler
+        self.pooling = pooling
 
         self.representation = PaiNNRepresentation(
             hidden_channels=hidden_channels,
@@ -155,7 +157,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         batch_temperature = kT/self.kb
         compute_neighbor_vecs(data)
         data = self.representation(data)
-        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=pooling)
+        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=self.pooling)
         graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
 
         time = F.tanh(F.softplus(self.time_out(graph_out))).squeeze(-1)
@@ -173,7 +175,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         return config
     
     @classmethod
-    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau, T_scaler_m, D_scaler):
+    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau, T_scaler_m, D_scaler, pooling):
         # Extract configuration from the existing model
         reaction_model_params = reaction_model.get_config()
         
@@ -188,7 +190,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         input_params = {key: reaction_model_params[key] for key in input_keys}
         
         # Initialize the new model with the copied parameters and additional features
-        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau=tau, T_scaler_m=T_scaler_m, D_scaler=D_scaler)
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau=tau, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
         
         # Load only the state_dict entries that include 'representation' in their key,
         # assuming these belong to the shared blocks or relevant components
@@ -273,7 +275,8 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         dropout_rate: float = 0.15,
         tau: float = 15,
         T_scaler_m: float = 7918.951990135471, 
-        D_scaler: float = 0.00390625 # 1/256
+        D_scaler: float = 0.00390625, # 1/256
+        pooling: str = "sum",
     ):
         super().__init__()
         atomic_numbers = [val.item() for val in canocialize_species(species)]
@@ -305,6 +308,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         self.tau = tau
         self.T_scaler_m = T_scaler_m
         self.D_scaler = D_scaler
+        self.pooling = pooling
 
         self.representation = PaiNNRepresentation(
             hidden_channels=hidden_channels,
@@ -337,7 +341,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
     def set_scaler(self, means, stddevs):
         self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
     
-    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False, pooling: str = "sum"):
+    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False):
         """_summary_
 
         Args:
@@ -367,7 +371,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         batch_temperature = kT/self.kb
         compute_neighbor_vecs(data)
         data = self.representation(data)
-        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=pooling)
+        graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=self.pooling)
         graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
         time_out = self.time_out(graph_out)
         time = F.tanh(F.softplus(time_out[:,1])).squeeze(-1)
@@ -392,7 +396,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         return config
     
     @classmethod
-    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau, T_scaler_m, D_scaler):
+    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau, T_scaler_m, D_scaler, pooling):
         # Extract configuration from the existing model
         reaction_model_params = reaction_model.get_config()
         
@@ -407,7 +411,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         input_params = {key: reaction_model_params[key] for key in input_keys}
         
         # Initialize the new model with the copied parameters and additional features
-        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau=tau, T_scaler_m=T_scaler_m, D_scaler=D_scaler)
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau=tau, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
         
         # Load only the state_dict entries that include 'representation' in their key,
         # assuming these belong to the shared blocks or relevant components
