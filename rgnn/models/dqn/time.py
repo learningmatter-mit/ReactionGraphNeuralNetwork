@@ -127,7 +127,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
     def set_scaler(self, means, stddevs):
         self.scale_shift = ScaleShift(means=means, stddevs=stddevs)
     
-    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, pooling: str = "sum"):
+    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None):
         """_summary_
 
         Args:
