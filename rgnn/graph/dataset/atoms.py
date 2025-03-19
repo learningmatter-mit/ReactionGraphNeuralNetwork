@@ -40,39 +40,7 @@ class AtomsDataset(TorchDataset):
             return (self.__class__(self[indices[:size]]), self.__class__(self[indices[size:]])), (indices[:size], indices[size:])
         return self.__class__(self[indices[:size]]), self.__class__(self[indices[size:]])
 
-    def train_val_test_split(
-        self,
-        train_size: int | float,
-        val_size: int | float,
-        seed: int = 0,
-        return_idx: bool = False,
-    ):
-        """Split the dataset into three subsets of `train_size`, `val_size`, and `len(self) - train_size - val_size`
-        elements.
 
-        Args:
-            train_size (int | float): Size of the training subset. If float, it is interpreted as the fraction of the
-                dataset.
-            val_size (int | float): Size of the validation subset. If float, it is interpreted as the fraction of the
-                dataset.
-            seed (int, optional): Random seed. Defaults to 0.
-            return_idx (bool, optional): Whether to return indices of the subsets. Defaults to False.
-
-        Returns:
-            Tuple[Self, Self, Self]: Three subsets of the dataset.
-        """
-        train_size = _determine_size(self, train_size)
-        val_size = _determine_size(self, val_size)
-
-        if return_idx:
-            (train_dataset, rest_dataset), (train_idx, _) = self.split(train_size, seed, return_idx)
-            (val_dataset, test_dataset), (val_idx, test_idx) = rest_dataset.split(val_size, seed, return_idx)
-            return (train_dataset, val_dataset, test_dataset), (train_idx, val_idx, test_idx)
-
-        train_dataset, rest_dataset = self.split(train_size, seed)
-        val_dataset, test_dataset = rest_dataset.split(val_size, seed)
-        return train_dataset, val_dataset, test_dataset
-    
     def train_val_split(
         self,
         train_size: int | float,
