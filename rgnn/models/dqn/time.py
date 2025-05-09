@@ -157,8 +157,8 @@ class TNet(torch.nn.Module, Configurable, ABC):
         graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=self.pooling)
         graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
 
-        scaled_time = F.softplus(self.time_out(graph_out)).squeeze(-1)
-        # scaled_time = F.tanh(F.softplus(self.time_out(graph_out))).squeeze(-1)*self.tau0
+        scaled_time = F.softplus(self.time_out(graph_out)).view(-1)
+        # scaled_time = F.tanh(F.softplus(self.time_out(graph_out))).view(-1)*self.tau0
         self.temperature_scaler = torch.exp(self.T_scaler_m*(1/batch_temperature-1/500))  #referenced to 500 K
         self.defect_scaler = self.D_scaler / defect #referenced to 1/256
         self.scaler = self.temperature_scaler * self.defect_scaler
@@ -375,9 +375,9 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=self.pooling)
         graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
         time_out = self.time_out(graph_out)
-        scaled_time = F.softplus(time_out[:,1]).squeeze(-1)
-        # scaled_time = F.tanh(F.softplus(time_out[:,1])).squeeze(-1)*self.tau0
-        goal = time_out[:,0].squeeze(-1)
+        scaled_time = F.softplus(time_out[:,1]).view(-1)
+        # scaled_time = F.tanh(F.softplus(time_out[:,1])).view(-1)*self.tau0
+        goal = time_out[:,0].view(-1)
         results = {}
         results.update({"goal": goal})
         # process scaler
