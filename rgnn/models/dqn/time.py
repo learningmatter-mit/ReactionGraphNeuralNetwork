@@ -165,7 +165,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         self.tau = self.tau0 * self.scaler
 
         if inference:
-            time_final = scaled_time*self.scaler
+            time_final = scaled_time*self.tau
             results = {"time": time_final}
         else:
             results = {"time": scaled_time}
@@ -389,7 +389,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
             goal = F.sigmoid(goal)
             goal_binary = (goal >= 0.5).float() # goal is 1
             scaled_time = scaled_time * (1 - goal_binary)
-            time_final = scaled_time*self.scaler
+            time_final = scaled_time*self.tau
             results.update({"time": time_final})
         else:
             results.update({"time": scaled_time})
