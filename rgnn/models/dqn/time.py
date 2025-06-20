@@ -62,6 +62,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         tau0: float = 15,
         T_scaler_m: float = 7562.689509994821, 
         D_scaler: float = 0.00390625, # 1/256
+        time_scaler: float = 100.0,
         pooling: str = "sum",
     ):
         super().__init__()
@@ -94,6 +95,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         self.tau0 = tau0
         self.T_scaler_m = T_scaler_m
         self.D_scaler = D_scaler
+        self.time_scaler = time_scaler
         self.pooling = pooling
 
         self.representation = PaiNNRepresentation(
@@ -124,7 +126,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         self.time_out.reset_parameters()
         # self.classifier.reset_parameters()
 
-    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False):
+    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False, training: bool = False):
         """_summary_
 
         Args:
@@ -158,15 +160,18 @@ class TNet(torch.nn.Module, Configurable, ABC):
         graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
 
         scaled_time = F.softplus(self.time_out(graph_out)).view(-1)
+        scaled_time = scaled_time*self.tau0*self.time_scaler
         # scaled_time = F.tanh(F.softplus(self.time_out(graph_out))).view(-1)*self.tau0
         self.temperature_scaler = torch.exp(self.T_scaler_m*(1/batch_temperature-1/500))  #referenced to 500 K
         self.defect_scaler = self.D_scaler / defect #referenced to 1/256
         self.scaler = self.temperature_scaler * self.defect_scaler
         self.tau = self.tau0 * self.scaler
 
-        if inference:
-            time_final = scaled_time*self.tau
+        if inference and not training:
+            time_final = scaled_time*self.scaler
             results = {"time": time_final}
+        elif inference and training:
+            results = {"time": scaled_time}
         else:
             results = {"time": scaled_time}
         return results
@@ -179,7 +184,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         return config
     
     @classmethod
-    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau0, T_scaler_m, D_scaler, pooling):
+    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau0, T_scaler_m, D_scaler, time_scaler, pooling):
         # Extract configuration from the existing model
         reaction_model_params = reaction_model.get_config()
         
@@ -194,7 +199,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         input_params = {key: reaction_model_params[key] for key in input_keys}
         
         # Initialize the new model with the copied parameters and additional features
-        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau0=tau0, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau0=tau0, T_scaler_m=T_scaler_m, D_scaler=D_scaler, time_scaler=time_scaler, pooling=pooling)
         
         # Load only the state_dict entries that include 'representation' in their key,
         # assuming these belong to the shared blocks or relevant components
@@ -280,6 +285,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         tau0: float = 15,
         T_scaler_m: float = 7562.689509994821, 
         D_scaler: float = 0.00390625, # 1/256
+        time_scaler: float = 100.0,
         pooling: str = "sum",
     ):
         super().__init__()
@@ -312,6 +318,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         self.tau0 = tau0
         self.T_scaler_m = T_scaler_m
         self.D_scaler = D_scaler
+        self.time_scaler = time_scaler
         self.pooling = pooling
 
         self.representation = PaiNNRepresentation(
@@ -342,7 +349,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         self.time_out.reset_parameters()
         # self.classifier.reset_parameters()
     
-    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False):
+    def forward(self, data: DataDict, temperature: float | None = None, defect: float | None = None, inference: bool = False, training: bool = False):
         """_summary_
 
         Args:
@@ -385,12 +392,18 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         self.defect_scaler = self.D_scaler / defect # referenced to 1/256
         self.scaler = self.temperature_scaler * self.defect_scaler
         self.tau = self.tau0 * self.scaler
-        if inference:
+        scaled_time = scaled_time*self.tau0*self.time_scaler
+        if inference and not training:
             goal = F.sigmoid(goal)
             goal_binary = (goal >= 0.5).float() # goal is 1
             scaled_time = scaled_time * (1 - goal_binary)
-            time_final = scaled_time*self.tau
+            time_final = scaled_time*self.scaler
             results.update({"time": time_final})
+        elif inference and training:
+            goal = F.sigmoid(goal)
+            goal_binary = (goal >= 0.5).float() # goal is 1
+            scaled_time = scaled_time * (1 - goal_binary)
+            results.update({"time": scaled_time})
         else:
             results.update({"time": scaled_time})
         return results
@@ -403,7 +416,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         return config
     
     @classmethod
-    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau0, T_scaler_m, D_scaler, pooling):
+    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau0, T_scaler_m, D_scaler, time_scaler, pooling):
         # Extract configuration from the existing model
         reaction_model_params = reaction_model.get_config()
         
@@ -418,7 +431,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         input_params = {key: reaction_model_params[key] for key in input_keys}
         
         # Initialize the new model with the copied parameters and additional features
-        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau0=tau0, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau0=tau0, T_scaler_m=T_scaler_m, D_scaler=D_scaler, time_scaler=time_scaler, pooling=pooling)
         
         # Load only the state_dict entries that include 'representation' in their key,
         # assuming these belong to the shared blocks or relevant components
