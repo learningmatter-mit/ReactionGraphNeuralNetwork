@@ -150,12 +150,20 @@ class TNet(torch.nn.Module, Configurable, ABC):
             defect = data["defect"]
         else:
             raise ValueError("num_defect should be given")
+        # Keep these as 1D tensors (B,)
+        kT = kT.view(-1)
+        defect = defect.view(-1)
+
         # batch_temperature = scatter(kT.squeeze(-1)/self.kb, data[K.batch], dim=0, reduce="mean")
         batch_temperature = kT/self.kb
         compute_neighbor_vecs(data)
         data = self.representation(data)
         graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=self.pooling)
-        graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
+        graph_out = F.normalize(
+            torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1),
+            dim=-1,
+        )
+        # graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
 
         scaled_time = (F.tanh(self.time_out(graph_out)).view(-1) + 1) * 0.5
         # scaled_time = F.tanh(F.softplus(self.time_out(graph_out))).view(-1)*self.tau0
@@ -169,8 +177,6 @@ class TNet(torch.nn.Module, Configurable, ABC):
         if inference and not training:
             time_final = scaled_time*self.scaler
             results = {"time": time_final}
-        elif inference and training:
-            results = {"time": scaled_time}
         else:
             results = {"time": scaled_time}
         return results
@@ -372,12 +378,21 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
             defect = data["defect"]
         else:
             raise ValueError("num_defect should be given")
+        # Keep these as 1D tensors (B,)
+        kT = kT.view(-1)
+        defect = defect.view(-1)
+
         # batch_temperature = scatter(kT.squeeze(-1)/self.kb, data[K.batch], dim=0, reduce="mean")
         batch_temperature = kT/self.kb
         compute_neighbor_vecs(data)
         data = self.representation(data)
         graph_out = scatter(data[K.node_features], data[K.batch], dim=0, reduce=self.pooling)
-        graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
+        graph_out = F.normalize(
+            torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1),
+            dim=-1,
+        )
+        # graph_out = F.normalize(torch.cat([kT.unsqueeze(-1), defect.unsqueeze(-1), graph_out], dim=-1), dim=-1)
+
         time_out = self.time_out(graph_out)
         scaled_time = (F.tanh(time_out[:,1]).view(-1) + 1) * 0.5
         # scaled_time = F.tanh(F.softplus(time_out[:,1])).view(-1)*self.tau0
@@ -391,17 +406,15 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         self.tau0 = torch.exp(self.tau_activation/self.kb/batch_temperature)
         self.tau = self.tau0 * self.scaler
         scaled_time = scaled_time*self.tau0
-        if inference and not training:
+        if inference:
             goal = F.sigmoid(goal)
             goal_binary = (goal >= 0.5).float() # goal is 1
             scaled_time = scaled_time * (1 - goal_binary)
-            time_final = scaled_time*self.scaler
-            results.update({"time": time_final})
-        elif inference and training:
-            goal = F.sigmoid(goal)
-            goal_binary = (goal >= 0.5).float() # goal is 1
-            scaled_time = scaled_time * (1 - goal_binary)
-            results.update({"time": scaled_time})
+            if not training:
+                time_final = scaled_time*self.scaler
+                results.update({"time": time_final})
+            else:
+                results.update({"time": scaled_time})
         else:
             results.update({"time": scaled_time})
         return results
