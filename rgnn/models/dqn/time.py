@@ -55,12 +55,12 @@ class TNet(torch.nn.Module, Configurable, ABC):
         shared_interactions: bool = False,
         shared_filters: bool = False,
         epsilon: float = 1e-8,
-        # canonical: bool = False,
         # N_emb: int = 16,
         n_feat: int = 32,
         dropout_rate: float = 0.15,
-        tau_activation: float = 0.5,
-        T_scaler_m: float = 7562.689509994821, 
+        tau0: float | None = 2000, # in microsecond unit
+        tau_activation: float | None = None,
+        T_scaler_m: float = 10845.407769505324, 
         D_scaler: float = 0.00390625, # 1/256
         pooling: str = "sum",
     ):
@@ -88,9 +88,9 @@ class TNet(torch.nn.Module, Configurable, ABC):
         self.shared_interactions = shared_interactions
         self.shared_filters = shared_filters
         self.epsilon = epsilon
-        # self.canonical = self.canonical
         self.dropout_rate = dropout_rate
         self.n_feat = n_feat
+        self.tau0 = tau0
         self.tau_activation = tau_activation
         self.T_scaler_m = T_scaler_m
         self.D_scaler = D_scaler
@@ -170,7 +170,10 @@ class TNet(torch.nn.Module, Configurable, ABC):
         self.temperature_scaler = torch.exp(self.T_scaler_m*(1/batch_temperature-1/500))  #referenced to 500 K
         self.defect_scaler = self.D_scaler / defect #referenced to 1/256
         self.scaler = self.temperature_scaler * self.defect_scaler
-        self.tau0 = torch.exp(self.tau_activation/self.kb/batch_temperature)
+        if self.tau_activation is not None:
+            self.tau0 = torch.exp(self.tau_activation / (self.kb * batch_temperature))
+        else:
+            assert self.tau0 is not None, "tau0 must be provided if tau_activation is None"
         self.tau = self.tau0 * self.scaler
         scaled_time = scaled_time*self.tau0
 
@@ -189,7 +192,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         return config
     
     @classmethod
-    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau_activation, T_scaler_m, D_scaler, pooling):
+    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau0, T_scaler_m, D_scaler, pooling, tau_activation=None):
         # Extract configuration from the existing model
         reaction_model_params = reaction_model.get_config()
         
@@ -204,7 +207,7 @@ class TNet(torch.nn.Module, Configurable, ABC):
         input_params = {key: reaction_model_params[key] for key in input_keys}
         
         # Initialize the new model with the copied parameters and additional features
-        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau_activation=tau_activation, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau0=tau0, tau_activation=tau_activation, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
         
         # Load only the state_dict entries that include 'representation' in their key,
         # assuming these belong to the shared blocks or relevant components
@@ -287,8 +290,9 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         epsilon: float = 1e-8,
         n_feat: int = 32,
         dropout_rate: float = 0.15,
-        tau_activation: float = 0.5,
-        T_scaler_m: float = 7562.689509994821, 
+        tau_activation: float | None = None,
+        tau0: float | None = 2000, # in microsecond unit
+        T_scaler_m: float = 10845.407769505324, 
         D_scaler: float = 0.00390625, # 1/256
         pooling: str = "sum",
     ):
@@ -319,6 +323,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         # self.canonical = self.canonical
         self.dropout_rate = dropout_rate
         self.n_feat = n_feat
+        self.tau0 = tau0
         self.tau_activation = tau_activation
         self.T_scaler_m = T_scaler_m
         self.D_scaler = D_scaler
@@ -403,7 +408,10 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         self.temperature_scaler = torch.exp(self.T_scaler_m*(1/batch_temperature-1/500))  # referenced to 500 K
         self.defect_scaler = self.D_scaler / defect # referenced to 1/256
         self.scaler = self.temperature_scaler * self.defect_scaler
-        self.tau0 = torch.exp(self.tau_activation/self.kb/batch_temperature)
+        if self.tau_activation is not None:
+            self.tau0 = torch.exp(self.tau_activation / (self.kb * batch_temperature))
+        else:
+            assert self.tau0 is not None, "tau0 must be provided if tau_activation is None"
         self.tau = self.tau0 * self.scaler
         scaled_time = scaled_time*self.tau0
         if inference:
@@ -427,7 +435,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         return config
     
     @classmethod
-    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau_activation, T_scaler_m, D_scaler, pooling):
+    def load_representation(cls, reaction_model, n_feat, dropout_rate, tau0, T_scaler_m, D_scaler, pooling, tau_activation=None):
         # Extract configuration from the existing model
         reaction_model_params = reaction_model.get_config()
         
@@ -442,7 +450,7 @@ class TNetBinary(torch.nn.Module, Configurable, ABC):
         input_params = {key: reaction_model_params[key] for key in input_keys}
         
         # Initialize the new model with the copied parameters and additional features
-        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau_activation=tau_activation, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
+        model = cls(**input_params, n_feat=n_feat, dropout_rate=dropout_rate, tau0=tau0, tau_activation=tau_activation, T_scaler_m=T_scaler_m, D_scaler=D_scaler, pooling=pooling)
         
         # Load only the state_dict entries that include 'representation' in their key,
         # assuming these belong to the shared blocks or relevant components
