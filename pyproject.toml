@@ -13,7 +13,7 @@ dependencies = [
   "networkx>=2.7.1",
   "pymatgen>=2022.5.26",
   "inflection",
-  "e3nn==0.4.4",
+  "e3nn>=0.4.4",
   "rich",
   "tensorboard",
   "matscipy",
