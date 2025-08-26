@@ -7,7 +7,6 @@ import matscipy.neighbours
 import numpy as np
 import torch
 from torch import Tensor
-from torch_cluster.radius import radius, radius_graph
 from torch_geometric.data import Data
 
 
@@ -169,101 +168,10 @@ class MatscipyNeighborListBuilder(NeighborListBuilder):
         )
 
 
-class TorchNeighborListBuilder(NeighborListBuilder):
-    """Pytorch neighbor list builder.
-    Note that this builder also uses minimum image convention,
-    so cutoff should be smaller than half of the box size.
-
-    Args:
-        cutoff (float): Cutoff radius for neighbor list.
-        self_interaction (bool): Whether to include self interaction. Default: False.
-        max_num_neighbors (int): Maximum number of neighbors. Default: 64.
-
-    """
-
-    def __init__(self, cutoff: float, self_interaction: bool = False, max_num_neighbors: int = 64):
-        self.cutoff = cutoff
-        self.self_interaction = self_interaction
-        self.max_num_neighbors = max_num_neighbors
-
-    def build(self, atoms_graph: Data) -> NeighborList:
-        vol = atoms_graph.cell.squeeze().det().item()
-        pbc = vol > 1e-8
-        if pbc:
-            cell = atoms_graph.cell.squeeze().cpu().numpy()
-            cell_center = np.sum(cell, axis=0) / 2
-            min_cell_dist = minimum_distance_to_cell(cell_center, cell)
-            if min_cell_dist < self.cutoff:
-                warnings.warn(
-                    "Cutoff is larger than the minimum distance to the cell. "
-                    "It may break MIC and return wrong neighbor lists.",
-                    stacklevel=1,
-                )
-            edge_index, edge_shift = radius_graph_pbc(
-                atoms_graph.pos, self.cutoff, atoms_graph.cell, max_num_neighbors=self.max_num_neighbors
-            )
-        else:
-            edge_index = radius_graph(
-                atoms_graph.pos, self.cutoff, None, None, max_num_neighbors=self.max_num_neighbors
-            )
-            edge_shift = torch.zeros((edge_index.size(1), 3), dtype=torch.float32, device=edge_index.device)
-        idx_neighbor, idx_center = edge_index[0], edge_index[1]
-        return NeighborList(idx_center, idx_neighbor, edge_shift)
-
-
-def radius_graph_pbc(pos: Tensor, cutoff: Tensor, cell: Tensor, max_num_neighbors: int = 64) -> tuple[Tensor, Tensor]:
-    """PBC version of torch_cluster.radius_graph.
-
-    Args:
-        pos: The positions of atoms.
-        cutoff: The cutoff radius.
-        cell: The cell.
-        max_num_neighbors: Maximum number of neighbors. Default: 64.
-
-    Returns:
-        The edge index and the edge shift.
-    """
-    assert cell.norm(dim=-1).max() < 1e4  # due to the precision problem
-    cell = cell.squeeze()
-
-    vol = cell.det()
-    area = torch.cross(cell.roll(shifts=1, dims=0), cell.roll(shifts=2, dims=0), dim=1).norm(dim=1)
-    height = vol / area
-
-    # to consider atoms out of the cell
-    extra_R = (pos @ cell.inverse()).floor_divide(1.0)
-
-    bound = (cutoff / height).ceil()
-    l, m, n = -bound + extra_R.min()
-    L, M, N = bound + extra_R.max() + 1.0  # plus 1 due to the boundary [,) in torch.arange below
-
-    grid_l = torch.arange(l.item(), L.item(), device=pos.device)
-    grid_m = torch.arange(m.item(), M.item(), device=pos.device)
-    grid_n = torch.arange(n.item(), N.item(), device=pos.device)
-    mesh_lmn = torch.stack(torch.meshgrid(grid_l, grid_m, grid_n, indexing="ij")).view(3, -1).transpose(0, 1)
-
-    R = mesh_lmn @ cell
-    R_pos = (R.unsqueeze(1) + pos.unsqueeze(0)).view(
-        -1, 3
-    )  # (num_R, num_pos, 3) -> (num_pos*num_R, 3) not (num_R*num_pos, 3)
-
-    row, col = radius(pos, R_pos, cutoff, None, None, max_num_neighbors=max_num_neighbors)  # row: R_pos, col: pos
-    pos_row, pos_col = R_pos[row], pos[col]
-    row, lmn_row = row.remainder(pos.size(0)), row.floor_divide(pos.size(0))
-
-    mask = (row != col) | (pos_row != pos_col).any(dim=1)
-    row, col, lmn_row = row[mask], col[mask], lmn_row[mask]
-
-    edge_index = torch.stack([col, row], dim=0)
-    edge_shift = -mesh_lmn[lmn_row]
-
-    return edge_index, edge_shift
-
 
 _neighborlistbuilder_cls_map = {
     "ase": ASENeighborListBuilder,
-    "matscipy": MatscipyNeighborListBuilder,
-    "torch": TorchNeighborListBuilder,
+    "matscipy": MatscipyNeighborListBuilder
 }
 
 
