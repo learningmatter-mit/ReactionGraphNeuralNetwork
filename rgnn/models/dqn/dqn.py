@@ -14,16 +14,14 @@ from .base import BaseDQN
 
 @registry.register_model("dqn")
 class ReactionDQN(BaseDQN):
-    """Interatomic potential model.
-    It wraps an energy model and computes the energy, force, stress and hessian.
-    The energy model should be a subclass of :class:`BaseEnergyModel`.
+    """DQN model based on the reaction model.
 
     Args:
-        energy_model (BaseEnergyModel): The energy model which computes the energy from the data.
-        compute_force (bool, optional): Whether to compute force. Defaults to True.
-        compute_stress (bool, optional): Whether to compute stress. Defaults to eFalse.
-        compute_hessian (bool, optional): Whether to compute hessian. Defaults to False.
-        return_embeddings (bool, optional): Whether to return the embeddings. Defaults to False.
+        reaction_model (BaseReactionModel): The reaction model.
+        N_emb (int, optional): The embedding dimension. Defaults to 16.
+        N_feat (int, optional): The hidden dimension. Defaults to 32.
+        dropout_rate (float, optional): The dropout rate. Defaults to 0.15.
+        canonical (bool, optional): Whether to use the canonical model. Defaults to False.
     """
 
     def __init__(
