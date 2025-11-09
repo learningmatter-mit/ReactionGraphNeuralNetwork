@@ -133,7 +133,7 @@ class PaiNN(BaseReactionModel):
         self.reaction_representation.reset_parameters()
         self.reaction_output.reset_parameters()
 
-    def forward(self, data: DataDict) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, data: DataDict, get_features: bool = False) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         compute_neighbor_vecs(data)
         data = self.representation(data)
         mask_tensor_r = self.create_subgraph_mask(data)
@@ -171,6 +171,8 @@ class PaiNN(BaseReactionModel):
         delta_e = energy_total_p - energy_total_r
         if self.scale_output:
             delta_e = self.scale_shift(K.delta_e, delta_e)
+        if get_features:
+            outputs[K.reaction_features] = reaction_feat
         outputs[K.energy_i] = energy_total_r
         outputs[K.energy_f] = energy_total_p
         outputs[K.delta_e] = delta_e

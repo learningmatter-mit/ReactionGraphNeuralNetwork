@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 import time
@@ -5,6 +6,8 @@ from typing import Dict
 from rgnn.graph.utils import batch_to
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch_geometric.loader import DataLoader
+
 
 MAX_EPOCHS = 100
 BEST_METRIC = 1e10
@@ -33,7 +36,7 @@ class AverageMeter:
 class Trainer:
     def __init__(
         self,
-        model_path,
+        save_dir,
         model,
         loss_fn,
         # metric_fn,
@@ -43,7 +46,7 @@ class Trainer:
         validation_loader,
         normalizer=None,
     ):
-        self.model_path = model_path
+        self.save_dir = save_dir
         self.model = model
         self.loss_fn = loss_fn
         # self.metric_fn = metric_fn
@@ -55,7 +58,8 @@ class Trainer:
 
     def train(
         self,
-        device,
+        logger,
+        device="cuda",
         start_epoch=0,
         n_epochs=MAX_EPOCHS,
         best_loss=BEST_LOSS,
@@ -105,28 +109,28 @@ class Trainer:
                 batch_time.update(time.time() - end)
                 end = time.time()
 
-                # if i % 10 == 0:
-                #     print("Epoch: [{0}][{1}/{2}]\t"
-                #           "Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t"
-                #           "Data {data_time.val:.3f} ({data_time.avg:.3f})\t"
-                #           "Loss {loss.val:.4f} ({loss.avg:.4f})\t".format(
-                #               epoch,
-                #               i,
-                #               len(self.train_loader),
-                #               batch_time=batch_time,
-                #               data_time=data_time,
-                #               loss=losses,
-                #               # metrics=metrics,
-                #           ))
+                if i % 10 == 0:
+                    logger.info("Epoch: [{0}][{1}/{2}]\t"
+                          "Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t"
+                          "Data {data_time.val:.3f} ({data_time.avg:.3f})\t"
+                          "Loss {loss.val:.4f} ({loss.avg:.4f})\t".format(
+                              epoch,
+                              i,
+                              len(self.train_loader),
+                              batch_time=batch_time,
+                              data_time=data_time,
+                              loss=losses,
+                              # metrics=metrics,
+                          ))
             train_losses.append(losses.avg)
             # train_metrics.append(metrics.avg)
-            print(f"Epoch: [{epoch}]\t")
-            val_loss = self.validate(device=device)
+            # logger.info(f"Epoch: [{epoch}]\t")
+            val_loss = self.validate(logger,device=device)
             val_losses.append(val_loss)
             # val_metrics.append(val_metric)
 
             if val_loss != val_loss:
-                print("Exit due to NaN")
+                logger.info("Exit due to NaN")
                 sys.exit(1)
 
             if isinstance(self.scheduler, ReduceLROnPlateau):
@@ -154,7 +158,7 @@ class Trainer:
                         "normalizer": normalizer_dict,
                     },
                     is_best,
-                    self.model_path,
+                    path=self.save_dir,
                     best_filename=best_model_name,
                 )
             else:
@@ -168,7 +172,7 @@ class Trainer:
                         "optimizer": self.optimizer.state_dict(),
                     },
                     is_best,
-                    self.model_path,
+                    path=self.save_dir,
                     best_filename=best_model_name,
                 )
             # Evaluate when to end training on account of no MAE improvement
@@ -189,7 +193,7 @@ class Trainer:
 
         return best_loss
 
-    def validate(self, device, test=False):
+    def validate(self, logger, device, test=False):
         """Validate the current state of the model using the validation set"""
         self.to(device=device)
         self.model.eval()
@@ -214,7 +218,7 @@ class Trainer:
                 batch_time.update(time.time() - end)
                 end = time.time()
 
-        print(
+        logger.info(
             # "Epoch: [{epoch:.3f}]\t"
             "*Validatoin: \t"
             "Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t"
@@ -243,8 +247,8 @@ class Trainer:
         filename: str = "checkpoint.pth.tar",
         best_filename: str = "best_model.pth.tar",
     ):
-        saving_filename = path + "/" + filename
-        best_filename = path + "/" + best_filename
+        saving_filename = os.path.join(path, filename)
+        best_filename = os.path.join(path, best_filename)
         torch.save(state, saving_filename)
         if is_best:
             shutil.copyfile(saving_filename, best_filename)
@@ -254,3 +258,20 @@ class Trainer:
         self.model.device = device
         self.model.to(device)
         self.optimizer.load_state_dict(self.optimizer.state_dict())
+
+def test_model(dataset, model, keys, device="cuda", batch_size=1):
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    model.eval()
+    model.to(device)
+    results = {}
+    for key in keys:
+        results[key] = {"target": [], "pred": []}
+    with torch.no_grad():    
+        for data in dataloader:
+            data = batch_to(data, device)
+            output = model(data)
+            for key in keys:
+                results[key]["target"].append(data[key].detach().cpu())
+                results[key]["pred"].append(output[key].detach().cpu())
+    results = {key: {"target": torch.cat(results[key]["target"], dim=0), "pred": torch.cat(results[key]["pred"], dim=0)} for key in keys}
+    return results
